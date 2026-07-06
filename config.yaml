@@ -1,0 +1,22 @@
+server:
+  port: 8080
+  tls_enabled: false
+  cert_file: "certs/server.crt"
+  key_file: "certs/server.key"
+  shutdown_timeout_seconds: 10
+
+database:
+  path: "database/gateway.db"
+
+ollama:
+  url: "http://localhost:11434"
+  client_timeout_seconds: 30
+
+queue:
+  workers: 5
+  max_size: 50
+  timeout_seconds: 30
+
+logging:
+  file_path: "logs/gateway.log"
+  level: "info"
