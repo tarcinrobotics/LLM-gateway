@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"strconv"
 
 	"gopkg.in/yaml.v3"
 )
@@ -52,6 +53,21 @@ func LoadConfig(path string) (*Config, error) {
 	var cfg Config
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, err
+	}
+
+	// Apply Environment Variables Overrides
+	if portStr := os.Getenv("PORT"); portStr != "" {
+		if p, err := strconv.Atoi(portStr); err == nil {
+			cfg.Server.Port = p
+		}
+	}
+	if ollamaURL := os.Getenv("OLLAMA_URL"); ollamaURL != "" {
+		cfg.Ollama.URL = ollamaURL
+	}
+	if tlsEnabled := os.Getenv("TLS_ENABLED"); tlsEnabled != "" {
+		if t, err := strconv.ParseBool(tlsEnabled); err == nil {
+			cfg.Server.TLSEnabled = t
+		}
 	}
 
 	// Set sane defaults if not defined

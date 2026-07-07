@@ -1,13 +1,13 @@
 # Build outputs
-bin/
-ui/dist/
-ui/node_modules/
+# bin/
+# ui/dist/
+# ui/node_modules/
 
 # Runtime state (auto-generated)
-certs/
-database/
-logs/
+# certs/
+# database/
+# logs/
 
 # Secrets and local config — NEVER commit these
 .env
-*.log
+# *.log

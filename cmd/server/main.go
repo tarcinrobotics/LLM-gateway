@@ -23,6 +23,11 @@ import (
 )
 
 func main() {
+	// Load .env file
+	if err := godotenv.Load(); err != nil {
+		slog.Warn("No .env file found or failed to load it. Will rely on system environment variables.")
+	}
+
 	// 1. Load config
 	cfgPath := "config.yaml"
 	if envPath := os.Getenv("CONFIG_PATH"); envPath != "" {
@@ -33,11 +38,6 @@ func main() {
 	if err != nil {
 		fmt.Printf("Error loading configuration: %v\n", err)
 		os.Exit(1)
-	}
-
-	// Load .env file
-	if err := godotenv.Load(); err != nil {
-		slog.Warn("No .env file found or failed to load it. Will rely on system environment variables.")
 	}
 
 	// 2. Initialize logger

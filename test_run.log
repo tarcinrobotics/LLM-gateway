@@ -1,0 +1,18 @@
+{"time":"2026-07-07T17:26:07.134555063+05:30","level":"INFO","msg":"Starting LLM Gateway..."}
+{"time":"2026-07-07T17:26:07.139073416+05:30","level":"INFO","msg":"Worker pool started","workers":5,"queue_size":50}
+{"time":"2026-07-07T17:26:07.139280701+05:30","level":"INFO","msg":"LLM Gateway running securely over HTTPS at https://localhost:8443"}
+{"time":"2026-07-07T17:26:09.145675954+05:30","level":"INFO","msg":"HTTP Request","request_id":"33d2d2fdb2dc3ca93e125892","ip":"127.0.0.1:40654","method":"GET","path":"/health","status":200,"latency_ms":0,"api_key_id":0,"api_key_prefix":"anonymous","model":"unknown","bytes_written":93}
+{"time":"2026-07-07T17:26:09.16252243+05:30","level":"INFO","msg":"HTTP Request","request_id":"66a822e66735b9e210f1680e","ip":"127.0.0.1:40662","method":"GET","path":"/api/v1/models","status":401,"latency_ms":0,"api_key_id":0,"api_key_prefix":"anonymous","model":"unknown","bytes_written":28}
+{"time":"2026-07-07T17:26:09.184776889+05:30","level":"INFO","msg":"HTTP Request","request_id":"ccf601e42df5c4bdb3664f87","ip":"127.0.0.1:40666","method":"GET","path":"/api/v1/models","status":200,"latency_ms":2,"api_key_id":1,"api_key_prefix":"gw_86e95dbb","model":"unknown","bytes_written":518}
+{"time":"2026-07-07T17:26:09.200763872+05:30","level":"INFO","msg":"HTTP Request","request_id":"58ac2940b975a18ca7ce6404","ip":"127.0.0.1:40678","method":"GET","path":"/admin/keys","status":200,"latency_ms":0,"api_key_id":0,"api_key_prefix":"anonymous","model":"unknown","bytes_written":150}
+{"time":"2026-07-07T17:26:09.220251046+05:30","level":"INFO","msg":"HTTP Request","request_id":"0c62961da913ff9cc9ed8f3c","ip":"127.0.0.1:40680","method":"POST","path":"/admin/keys","status":201,"latency_ms":1,"api_key_id":0,"api_key_prefix":"anonymous","model":"unknown","bytes_written":193}
+{"time":"2026-07-07T17:26:09.234247025+05:30","level":"INFO","msg":"HTTP Request","request_id":"02c8d8fd69f46a45ee089b39","ip":"127.0.0.1:40688","method":"GET","path":"/admin/metrics","status":200,"latency_ms":0,"api_key_id":0,"api_key_prefix":"anonymous","model":"unknown","bytes_written":174}
+{"time":"2026-07-07T17:26:09.24966012+05:30","level":"INFO","msg":"HTTP Request","request_id":"2fee8ac4252879126a612803","ip":"127.0.0.1:40694","method":"GET","path":"/admin/logs","status":200,"latency_ms":0,"api_key_id":0,"api_key_prefix":"anonymous","model":"unknown","bytes_written":594}
+{"time":"2026-07-07T17:26:39.296119382+05:30","level":"ERROR","msg":"Queue wait timeout (30s exceeded)","request_id":"d2c459d722483ad161459def"}
+{"time":"2026-07-07T17:26:39.302118401+05:30","level":"INFO","msg":"HTTP Request","request_id":"d2c459d722483ad161459def","ip":"127.0.0.1:40708","method":"POST","path":"/api/v1/chat","status":504,"latency_ms":30034,"api_key_id":1,"api_key_prefix":"gw_86e95dbb","model":"qwen3.5:0.8b","bytes_written":61}
+{"time":"2026-07-07T17:27:09.334551435+05:30","level":"ERROR","msg":"Ollama stream read error","error":"error reading stream line: context deadline exceeded"}
+{"time":"2026-07-07T17:27:09.334629378+05:30","level":"INFO","msg":"HTTP Request","request_id":"136aa2fd16300a0587580a67","ip":"127.0.0.1:55488","method":"POST","path":"/api/v1/chat","status":200,"latency_ms":30000,"api_key_id":1,"api_key_prefix":"gw_86e95dbb","model":"qwen3.5:0.8b","bytes_written":45331}
+{"time":"2026-07-07T17:27:09.337635769+05:30","level":"INFO","msg":"Shutdown signal received. Initiating graceful shutdown..."}
+{"time":"2026-07-07T17:27:09.337744863+05:30","level":"INFO","msg":"HTTP server stopped gracefully"}
+{"time":"2026-07-07T17:27:09.337763904+05:30","level":"INFO","msg":"Server execution completed"}
+{"time":"2026-07-07T17:27:09.337794273+05:30","level":"INFO","msg":"Worker pool stopped gracefully"}
