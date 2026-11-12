@@ -56,7 +56,7 @@ func main() {
 	}
 	defer db.Close()
 
-	// 4. Seed initial database data (default user, roles, permissions, API Key)
+	// 4. Seed initial database data (default user, roles, and permissions)
 	if err := database.SeedData(db); err != nil {
 		slog.Error("Database seeding failed", slog.Any("error", err))
 		os.Exit(1)
