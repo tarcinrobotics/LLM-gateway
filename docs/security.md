@@ -61,6 +61,18 @@ Replace the placeholders with your configured credentials and the actual key ID.
 
 Do not revoke other API keys unintentionally. The legacy key is not automatically removed from existing databases.
 
+### API Key Authentication
+
+API keys must be sent through HTTP request headers. The gateway supports:
+
+- `Authorization: Bearer <API_KEY>`
+- `Authorization: <API_KEY>`
+- `X-API-Key: <API_KEY>`
+
+**Security Note:** API keys passed through the `api_key` URL query parameter are no longer accepted. URL query parameters can appear in browser history, server logs, and other request records.
+
+**Migration:** Clients previously using `?api_key=<API_KEY>` must move their API key to one of the supported request headers. Requests containing only the query parameter receive `401 Unauthorized`.
+
 ## TLS Encryption (HTTPS)
 
 The server supports TLS 1.3 encryption for deploying over public or untrusted networks.

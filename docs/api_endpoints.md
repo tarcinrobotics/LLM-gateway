@@ -3,12 +3,16 @@
 The LLM Gateway is split into **Public**, **Consumer**, and **Admin** endpoints.
 
 ## 1. Public Endpoints
+
 Public endpoints do not require any authentication.
 
 ### `GET /health`
+
 Returns the status of the gateway, database connectivity, and the worker queue length.
+
 - **Auth:** None
 - **Response (200 OK):**
+
 ```json
 {
   "status": "UP",
@@ -22,13 +26,22 @@ Returns the status of the gateway, database connectivity, and the worker queue l
 ---
 
 ## 2. Consumer Endpoints
-Consumer endpoints require a valid generated API Key. The key must be passed in the `Authorization` header as a Bearer token.
-`Authorization: Bearer <API_KEY>`
+
+Consumer endpoints require a valid generated API Key. API keys must be provided through an HTTP request header using one of the following formats:
+
+- `Authorization: Bearer <API_KEY>`
+- `Authorization: <API_KEY>`
+- `X-API-Key: <API_KEY>`
+
+API keys passed through the `api_key` URL query parameter are no longer supported. Requests relying only on this parameter will receive `401 Unauthorized`.
 
 ### `GET /api/v1/models`
+
 Retrieves a list of available models from the backend Ollama instance.
+
 - **Auth:** API Key
 - **Response (200 OK):**
+
 ```json
 {
   "models": [
@@ -41,33 +54,43 @@ Retrieves a list of available models from the backend Ollama instance.
 ```
 
 ### `POST /api/v1/chat`
+
 Sends a prompt to a specific LLM.
+
 - **Auth:** API Key
 - **Request Body:**
+
 ```json
 {
   "model": "qwen2.5:3b-instruct",
-  "messages": [{"role": "user", "content": "Explain TLS."}],
+  "messages": [{ "role": "user", "content": "Explain TLS." }],
   "stream": false
 }
 ```
+
 If `stream: true`, the gateway proxies Ollama's Server-Sent Events (SSE). Otherwise, it waits for the full response and returns JSON.
 
 ---
 
 ## 3. Admin Endpoints
+
 Admin endpoints require HTTP Basic Auth using the credentials defined in your `.env` file (`ADMIN_USER` and `ADMIN_PASS`).
 `Authorization: Basic <base64(user:pass)>`
 
 ### `GET /admin/metrics`
+
 Returns runtime latency and performance statistics.
 
 ### `GET /admin/keys`
+
 Lists all generated API keys (excluding the raw secret keys).
 
 ### `POST /admin/keys`
+
 Generates a new API key.
+
 - **Request Body:**
+
 ```json
 {
   "user_id": 1,
@@ -77,7 +100,9 @@ Generates a new API key.
 ```
 
 ### `DELETE /admin/keys/{id}`
+
 Revokes and permanently deletes an API key.
 
 ### `GET /admin/logs`
+
 Retrieves a list of the 50 most recent request logs, detailing the status codes, latencies, IP addresses, and consumed tokens.
