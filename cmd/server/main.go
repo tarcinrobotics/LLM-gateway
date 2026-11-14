@@ -73,7 +73,10 @@ func main() {
 	defer wp.Stop()
 
 	// 7. Configure HTTP router
-	router := api.NewRouter(db, wp, ollamaClient, discovery)
+	queueTimeout := time.Duration(cfg.Queue.TimeoutSeconds) * time.Second
+	inferenceTimeout := time.Duration(cfg.Ollama.InferenceTimeoutSeconds) * time.Second
+
+	router := api.NewRouter(db, wp, ollamaClient, discovery, queueTimeout, inferenceTimeout)
 
 	// 8. Configure HTTPS/TLS Server
 	addr := fmt.Sprintf(":%d", cfg.Server.Port)

@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"io/fs"
 	"net/http"
+	"time"
 
 	"llm_gateway/internal/api/handlers"
 	"llm_gateway/internal/api/middleware"
@@ -18,6 +19,8 @@ func NewRouter(
 	wp *queue.WorkerPool,
 	ollamaClient *ollama.Client,
 	discovery *ollama.ModelDiscovery,
+	queueTimeout time.Duration,
+	inferenceTimeout time.Duration,
 ) http.Handler {
 	mux := http.NewServeMux()
 
@@ -35,7 +38,7 @@ func NewRouter(
 	}
 
 	// 2. Gateway Proxy / Consumer Endpoints (Secure)
-	mux.Handle("POST /api/v1/chat", secureRoute(handlers.ChatHandler(db, wp, ollamaClient)))
+	mux.Handle("POST /api/v1/chat", secureRoute(handlers.ChatHandler(db, wp, ollamaClient, queueTimeout, inferenceTimeout)))
 	mux.Handle("GET /api/v1/models", secureRoute(handlers.ModelsHandler(discovery)))
 
 	// adminRoute helper

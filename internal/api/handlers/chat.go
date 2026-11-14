@@ -18,7 +18,13 @@ import (
 )
 
 // ChatHandler processes incoming LLM chat requests.
-func ChatHandler(db *sql.DB, wp *queue.WorkerPool, client *ollama.Client) http.HandlerFunc {
+func ChatHandler(
+	db *sql.DB,
+	wp *queue.WorkerPool,
+	client *ollama.Client,
+	queueTimeout time.Duration,
+	inferenceTimeout time.Duration,
+) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		startTime := time.Now()
 		reqID := middleware.GetRequestID(r.Context())
@@ -67,29 +73,84 @@ func ChatHandler(db *sql.DB, wp *queue.WorkerPool, client *ollama.Client) http.H
 			return
 		}
 
-		// Set context timeout (default 30 seconds)
-		execCtx, cancel := queue.WithRequestTimeout(r.Context(), 30*time.Second)
+		// Use the request context so client disconnection cancels inference.
+		requestCtx, cancel := context.WithCancel(r.Context())
 		defer cancel()
 
-		// Schedule job into the worker pool
-		jobRes, err := queue.ScheduleJob(execCtx, wp, client, &chatReq)
+		// Schedule the job with separate queue and inference timeouts.
+		jobRes, err := queue.ScheduleJob(
+			requestCtx,
+			wp,
+			client,
+			&chatReq,
+			queueTimeout,
+			inferenceTimeout,
+		)
 		if err != nil {
 			metrics.RecordRequest(false, time.Since(startTime).Milliseconds())
-			
-			// Check if queue full or timeout
-			if errors.Is(err, context.DeadlineExceeded) {
-				slog.Error("Queue wait timeout (30s exceeded)", slog.String("request_id", reqID))
-				respondJSONError(w, http.StatusGatewayTimeout, "Gateway Timeout: Request spent too long in queue")
+
+			if errors.Is(err, context.Canceled) {
+				slog.Info("Chat request cancelled", slog.String("request_id", reqID))
 				return
 			}
-			
-			slog.Error("Queue submission rejected", slog.String("request_id", reqID), slog.Any("error", err))
+
+			if errors.Is(err, queue.ErrQueueTimeout) {
+				slog.Error("Queue wait timeout",
+					slog.String("request_id", reqID),
+					slog.Duration("timeout", queueTimeout),
+				)
+				respondJSONError(w, http.StatusGatewayTimeout, "Gateway Timeout: Request spent too long waiting in the queue")
+				return
+			}
+
+			slog.Error("Queue submission failed",
+				slog.String("request_id", reqID),
+				slog.Any("error", err),
+			)
 			respondJSONError(w, http.StatusServiceUnavailable, "Service Unavailable: Worker queue is full")
 			return
 		}
 
 		// Handle streaming response
 		if chatReq.Stream {
+			// Handle errors that occur before streaming starts.
+			if jobRes.Err != nil {
+				metrics.RecordRequest(false, time.Since(startTime).Milliseconds())
+
+				statusCode := http.StatusBadGateway
+				message := "Bad Gateway: Ollama streaming request failed"
+
+				if errors.Is(jobRes.Err, context.DeadlineExceeded) {
+					statusCode = http.StatusGatewayTimeout
+					message = "Gateway Timeout: Ollama request timed out"
+				}
+
+				slog.Error("Streaming failed before headers",
+					slog.String("request_id", reqID),
+					slog.Any("error", jobRes.Err),
+				)
+
+				respondJSONError(w, statusCode, message)
+
+				latency := time.Since(startTime).Milliseconds()
+				go func() {
+					auditLog := &database.RequestLog{
+						RequestID:    reqID,
+						APIKeyID:     apiKey.ID,
+						Model:        chatReq.Model,
+						LatencyMS:    latency,
+						StatusCode:   statusCode,
+						IPAddress:    ip,
+						ErrorMessage: jobRes.Err.Error(),
+					}
+
+					if err := database.WriteRequestLog(db, auditLog); err != nil {
+						slog.Error("Failed to write request audit log", slog.Any("error", err))
+					}
+				}()
+
+				return
+			}
 			if jobRes.ChunkChan == nil {
 				metrics.RecordRequest(false, time.Since(startTime).Milliseconds())
 				respondJSONError(w, http.StatusInternalServerError, "Internal Server Error: Missing stream channel")
@@ -104,35 +165,83 @@ func ChatHandler(db *sql.DB, wp *queue.WorkerPool, client *ollama.Client) http.H
 
 			var promptTokens, completionTokens int
 			var finalErr error
+			var completed bool
+			var clientDisconnected bool
 
 			for chunk := range jobRes.ChunkChan {
 				if chunk.Done {
+					completed = true
 					promptTokens = chunk.PromptEvalCount
 					completionTokens = chunk.EvalCount
 				}
-				
-				// Write SSE event chunk
+
 				if err := ollama.WriteSSEChunk(w, chunk); err != nil {
 					finalErr = err
-					slog.Warn("Client disconnected or SSE write failed", slog.String("request_id", reqID), slog.Any("error", err))
+					clientDisconnected = true
+
+					slog.Warn("Client disconnected or SSE write failed",
+						slog.String("request_id", reqID),
+						slog.Any("error", err),
+					)
+
+					cancel()
 					break
 				}
+			}
+			// Read the worker's final inference outcome.
+			if !clientDisconnected && jobRes.ErrChan != nil {
+				if streamErr, ok := <-jobRes.ErrChan; ok && streamErr != nil {
+					finalErr = streamErr
+				}
+			}
+
+			// A stream without a completion chunk is never successful.
+			if finalErr == nil && !completed {
+				finalErr = errors.New("stream ended without completion signal")
+			}
+
+			// Send an error event only while the client is still connected.
+			if finalErr != nil && !clientDisconnected &&
+				r.Context().Err() == nil &&
+				!errors.Is(finalErr, context.Canceled) {
+				errorMessage := "Generation failed"
+				if errors.Is(finalErr, context.DeadlineExceeded) {
+					errorMessage = "Generation timed out"
+				}
+
+				if err := ollama.WriteSSEErrorEvent(w, errorMessage); err != nil {
+					slog.Warn("Failed to write SSE error event",
+						slog.String("request_id", reqID),
+						slog.Any("error", err),
+					)
+				}
+			}
+
+			if errors.Is(finalErr, context.DeadlineExceeded) {
+				slog.Error("Inference timeout during streaming",
+					slog.String("request_id", reqID),
+					slog.Duration("timeout", inferenceTimeout),
+				)
+			} else if finalErr != nil {
+				slog.Error("Streaming inference failed",
+					slog.String("request_id", reqID),
+					slog.Any("error", finalErr),
+				)
 			}
 
 			latency := time.Since(startTime).Milliseconds()
 			success := finalErr == nil
 
-			// Log to metrics and SQLite DB
 			metrics.RecordRequest(success, latency)
-			
+
 			var errMsg string
-			var statusCode = http.StatusOK
+			statusCode := http.StatusOK
 			if !success {
 				errMsg = finalErr.Error()
-				statusCode = http.StatusInternalServerError
 			}
 
-			// Async audit log to database to keep request fast
+			// HTTP status remains 200 after SSE headers are sent.
+			// ErrorMessage and metrics record the generation outcome separately.
 			go func() {
 				auditLog := &database.RequestLog{
 					RequestID:        reqID,
@@ -149,15 +258,23 @@ func ChatHandler(db *sql.DB, wp *queue.WorkerPool, client *ollama.Client) http.H
 					slog.Error("Failed to write request audit log to database", slog.Any("error", err))
 				}
 			}()
-
 			return
 		}
 
 		// Handle non-streaming response
 		if jobRes.Err != nil {
 			metrics.RecordRequest(false, time.Since(startTime).Milliseconds())
-			slog.Error("Ollama processing failed", slog.String("request_id", reqID), slog.Any("error", jobRes.Err))
-
+			if errors.Is(jobRes.Err, context.DeadlineExceeded) {
+				slog.Error("Inference timeout",
+					slog.String("request_id", reqID),
+					slog.Duration("timeout", inferenceTimeout),
+				)
+			} else {
+				slog.Error("Ollama processing failed",
+					slog.String("request_id", reqID),
+					slog.Any("error", jobRes.Err),
+				)
+			}
 			statusCode := http.StatusInternalServerError
 			if errors.Is(jobRes.Err, context.DeadlineExceeded) {
 				statusCode = http.StatusGatewayTimeout

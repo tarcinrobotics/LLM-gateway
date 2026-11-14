@@ -6,22 +6,29 @@ import (
 	"log/slog"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"llm_gateway/internal/ollama"
 )
 
-// Job represents a chat completion request to be processed by a worker.
+// Job represents a chat completion request waiting for a worker.
 type Job struct {
-	Ctx          context.Context
-	Req          *ollama.ChatRequest
-	OllamaClient *ollama.Client
-	ResultChan   chan JobResult
+	Ctx              context.Context
+	QueueCtx         context.Context
+	InferenceTimeout time.Duration
+	Req              *ollama.ChatRequest
+	OllamaClient     *ollama.Client
+	ResultChan       chan JobResult
+	PickedUp         chan struct{}
+	ClaimMu          *sync.Mutex
+	Claimed          *bool
 }
 
 // JobResult represents the output of processing a Job.
 type JobResult struct {
 	Response  *ollama.ChatResponse
 	ChunkChan chan ollama.ChatResponse
+	ErrChan   chan error
 	Err       error
 }
 
@@ -84,6 +91,20 @@ func (wp *WorkerPool) Stop() {
 	slog.Info("Worker pool stopped gracefully")
 }
 
+// claimJob atomically checks the queue deadline and marks the job as claimed.
+func (job Job) claimJob() bool {
+	job.ClaimMu.Lock()
+	defer job.ClaimMu.Unlock()
+
+	if job.QueueCtx.Err() != nil {
+		return false
+	}
+
+	*job.Claimed = true
+	close(job.PickedUp)
+	return true
+}
+
 func (wp *WorkerPool) worker(id int) {
 	defer wp.wg.Done()
 	slog.Debug("Worker started", slog.Int("worker_id", id))
@@ -93,41 +114,68 @@ func (wp *WorkerPool) worker(id int) {
 		wp.process(job)
 		atomic.AddInt32(&wp.active, -1)
 	}
+
 	slog.Debug("Worker stopped", slog.Int("worker_id", id))
 }
 
 func (wp *WorkerPool) process(job Job) {
-	// Check if context has timed out or cancelled while waiting in queue
-	if err := job.Ctx.Err(); err != nil {
-		job.ResultChan <- JobResult{Err: err}
+	if !job.claimJob() {
+		job.ResultChan <- JobResult{Err: job.QueueCtx.Err()}
 		return
 	}
 
+	// Inference gets a fresh deadline only after the worker claims the job.
+	inferenceCtx, cancel := context.WithTimeout(job.Ctx, job.InferenceTimeout)
+	defer cancel()
+
 	if !job.Req.Stream {
-		resp, err := job.OllamaClient.Chat(job.Ctx, job.Req, nil)
+		resp, err := job.OllamaClient.Chat(inferenceCtx, job.Req, nil)
 		job.ResultChan <- JobResult{Response: resp, Err: err}
 		return
 	}
 
-	// For streaming, create a chunk channel
 	chunkChan := make(chan ollama.ChatResponse, 50)
+	errChan := make(chan error, 1)
 
-	// Send chunk channel back to handler immediately
-	job.ResultChan <- JobResult{ChunkChan: chunkChan}
+	var started bool
 
-	// Fetch stream from Ollama and forward chunks to channel
-	_, err := job.OllamaClient.Chat(job.Ctx, job.Req, func(chunk ollama.ChatResponse) error {
+	_, err := job.OllamaClient.Chat(inferenceCtx, job.Req, func(chunk ollama.ChatResponse) error {
+		if !started {
+			// Buffer the first chunk before notifying the handler.
+			chunkChan <- chunk
+			started = true
+
+			job.ResultChan <- JobResult{
+				ChunkChan: chunkChan,
+				ErrChan:   errChan,
+			}
+
+			return nil
+		}
+
 		select {
-		case <-job.Ctx.Done():
-			return job.Ctx.Err()
+		case <-inferenceCtx.Done():
+			return inferenceCtx.Err()
 		case chunkChan <- chunk:
 			return nil
 		}
 	})
 
 	if err != nil {
-		// Log but let closing the channel signal completion/failure to reader
-		slog.Error("Ollama stream read error", slog.Any("error", err))
+		if !started {
+			// The upstream failed before producing its first chunk.
+			job.ResultChan <- JobResult{Err: err}
+		} else {
+			errChan <- err
+			slog.Error("Ollama stream processing failed", slog.Any("error", err))
+		}
+	} else if !started {
+		// Defensive: Chat returned without producing any chunks.
+		job.ResultChan <- JobResult{
+			Err: errors.New("ollama stream returned without producing chunks"),
+		}
 	}
+
+	close(errChan)
 	close(chunkChan)
 }

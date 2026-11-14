@@ -3,6 +3,7 @@
 A high-performance, secure Go-based reverse proxy and gateway for Ollama LLMs. It features Rate Limiting, Role-Based Access Control (RBAC), Queue Management, and TLS 1.3 encryption.
 
 ## Features
+
 - 🚀 **Asynchronous Queueing:** Uses FIFO worker pools to handle concurrent LLM requests without overwhelming the backend.
 - 🔒 **Security:** HTTP Basic Auth for admin routes, API Keys for consumers.
 - 🛑 **Rate Limiting:** In-memory Token Bucket per API Key.
@@ -15,4 +16,20 @@ A high-performance, secure Go-based reverse proxy and gateway for Ollama LLMs. I
 2. Run `./setup.sh` to compile the React UI and the Go server into a single binary.
 3. Run `./start.sh` to launch the Gateway on `http://localhost:8080`.
 
-For detailed API documentation, check the `docs/` folder!
+## Timeout Configuration
+
+The gateway uses separate timeouts for queue waiting and Ollama inference.
+
+Default settings in `config.yaml`:
+
+| Setting                                                 |     Default |
+| ------------------------------------------------------- | ----------: |
+| Queue timeout (`queue.timeout_seconds`)                 |  30 seconds |
+| Inference timeout (`ollama.inference_timeout_seconds`)  | 120 seconds |
+| Ollama client timeout (`ollama.client_timeout_seconds`) |  30 seconds |
+
+Queue timeout controls how long a request waits for an available worker. Inference timeout starts when a worker begins processing the request and controls the time allowed for Ollama inference.
+
+The Ollama client timeout must not impose a shorter limit on chat inference.
+
+For detailed API documentation, check `docs/api_endpoints.md`.

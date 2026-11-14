@@ -28,8 +28,9 @@ type DatabaseConfig struct {
 }
 
 type OllamaConfig struct {
-	URL                  string `yaml:"url"`
-	ClientTimeoutSeconds int    `yaml:"client_timeout_seconds"`
+	URL                     string `yaml:"url"`
+	ClientTimeoutSeconds    int    `yaml:"client_timeout_seconds"`
+	InferenceTimeoutSeconds int    `yaml:"inference_timeout_seconds"`
 }
 
 type QueueConfig struct {
@@ -85,6 +86,9 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if cfg.Ollama.ClientTimeoutSeconds == 0 {
 		cfg.Ollama.ClientTimeoutSeconds = 30
+	}
+	if cfg.Ollama.InferenceTimeoutSeconds == 0 {
+		cfg.Ollama.InferenceTimeoutSeconds = 120
 	}
 	if cfg.Queue.Workers == 0 {
 		cfg.Queue.Workers = 5

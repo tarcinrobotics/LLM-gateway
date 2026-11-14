@@ -11,6 +11,7 @@ database:
 ollama:
   url: "http://localhost:11434"
   client_timeout_seconds: 30
+  inference_timeout_seconds: 120
 
 queue:
   workers: 5

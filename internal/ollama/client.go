@@ -13,17 +13,21 @@ import (
 
 // Client is the client for interacting with a local or remote Ollama instance.
 type Client struct {
-	baseURL string
-	client  *http.Client
+	baseURL    string
+	client     *http.Client
+	chatClient *http.Client
 }
 
 // NewClient creates a new Ollama API client.
 func NewClient(baseURL string, timeout time.Duration) *Client {
+	client := &http.Client{
+		Timeout: timeout,
+	}
+
 	return &Client{
-		baseURL: baseURL,
-		client: &http.Client{
-			Timeout: timeout,
-		},
+		baseURL:    baseURL,
+		client:     client,
+		chatClient: &http.Client{Transport: client.Transport},
 	}
 }
 
@@ -69,18 +73,9 @@ func (c *Client) Chat(ctx context.Context, chatReq *ChatRequest, onChunk func(Ch
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	// If streaming, disable default HTTP client timeout and let context control it
-	var clientToUse *http.Client
-	if chatReq.Stream {
-		// Create a separate client without a hard response read timeout to allow long streams
-		clientToUse = &http.Client{
-			Transport: c.client.Transport,
-		}
-	} else {
-		clientToUse = c.client
-	}
-
-	resp, err := clientToUse.Do(req)
+	// Chat requests use the request context for their full lifetime.
+	// The inference deadline is managed by the worker.
+	resp, err := c.chatClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to send chat request to Ollama: %w", err)
 	}
@@ -106,39 +101,42 @@ func (c *Client) Chat(ctx context.Context, chatReq *ChatRequest, onChunk func(Ch
 	reader := bufio.NewReader(resp.Body)
 
 	var lastChunk ChatResponse
+	completed := false
+
 	for {
-		// Read line by line (Ollama streams newline-delimited JSON chunks)
-		line, err := reader.ReadBytes('\n')
-		if err != nil {
-			if err == io.EOF {
+		line, readErr := reader.ReadBytes('\n')
+		line = bytes.TrimSpace(line)
+
+		if len(line) > 0 {
+			var chunk ChatResponse
+			if err := json.Unmarshal(line, &chunk); err != nil {
+				return nil, fmt.Errorf("failed to unmarshal stream chunk: %w", err)
+			}
+
+			lastChunk = chunk
+
+			if onChunk != nil {
+				if err := onChunk(chunk); err != nil {
+					return nil, fmt.Errorf("callback error (e.g. client disconnect): %w", err)
+				}
+			}
+
+			if chunk.Done {
+				completed = true
 				break
 			}
-			return nil, fmt.Errorf("error reading stream line: %w", err)
 		}
 
-		line = bytes.TrimSpace(line)
-		if len(line) == 0 {
-			continue
-		}
-
-		var chunk ChatResponse
-		if err := json.Unmarshal(line, &chunk); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal stream chunk: %w", err)
-		}
-
-		// Keep track of the last chunk so we can extract final metrics
-		lastChunk = chunk
-
-		// Invoke callback
-		if onChunk != nil {
-			if err := onChunk(chunk); err != nil {
-				return nil, fmt.Errorf("callback error (e.g. client disconnect): %w", err)
+		if readErr != nil {
+			if readErr == io.EOF {
+				break
 			}
+			return nil, fmt.Errorf("error reading stream line: %w", readErr)
 		}
+	}
 
-		if chunk.Done {
-			break
-		}
+	if !completed {
+		return nil, fmt.Errorf("ollama stream ended before completion signal")
 	}
 
 	return &lastChunk, nil

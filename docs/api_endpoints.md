@@ -70,7 +70,47 @@ Sends a prompt to a specific LLM.
 
 If `stream: true`, the gateway proxies Ollama's Server-Sent Events (SSE). Otherwise, it waits for the full response and returns JSON.
 
----
+#### Streaming Behavior
+
+When streaming is enabled:
+
+- The gateway forwards generated content as SSE `data:` events.
+- A stream is considered successful only when Ollama sends its final completion chunk with `done: true`.
+- If Ollama fails before the first chunk, the gateway returns an HTTP error before starting the SSE response:
+  - `502 Bad Gateway` for upstream streaming failures.
+  - `504 Gateway Timeout` when inference exceeds its configured timeout.
+- If an error occurs after SSE headers have been sent, the gateway sends an SSE error event instead of changing the HTTP status:
+
+```text
+event: error
+data: {"error":"Generation failed"}
+```
+
+- The HTTP status remains `200 OK` after streaming begins, even if generation subsequently fails. Check the SSE events and request audit logs to determine the generation outcome.
+- If the client disconnects, the gateway cancels the associated upstream inference request.
+- Internal upstream error details are logged by the gateway but are not exposed in SSE error messages.
+
+#### Timeout Configuration
+
+The gateway uses separate timeouts for queue waiting and Ollama inference.
+
+| Setting               | Configuration Key                  |     Default | Description                                                                             |
+| --------------------- | ---------------------------------- | ----------: | --------------------------------------------------------------------------------------- |
+| Queue timeout         | `queue.timeout_seconds`            |  30 seconds | Maximum time a request can wait in the worker queue.                                    |
+| Inference timeout     | `ollama.inference_timeout_seconds` | 120 seconds | Maximum time allowed for Ollama inference after a worker starts processing the request. |
+| Ollama client timeout | `ollama.client_timeout_seconds`    |  30 seconds | HTTP client timeout used for Ollama operations other than chat inference.               |
+
+Example configuration in `config.yaml`:
+
+```yaml
+queue:
+  timeout_seconds: 30
+
+ollama:
+  url: "http://localhost:11434"
+  client_timeout_seconds: 30
+  inference_timeout_seconds: 120
+```
 
 ## 3. Admin Endpoints
 

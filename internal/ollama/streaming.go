@@ -13,13 +13,32 @@ func WriteSSEChunk(w http.ResponseWriter, data interface{}) error {
 		return fmt.Errorf("failed to marshal SSE payload: %w", err)
 	}
 
-	// SSE chunk format
 	_, err = fmt.Fprintf(w, "data: %s\n\n", payload)
 	if err != nil {
 		return fmt.Errorf("failed to write SSE data: %w", err)
 	}
 
-	// Flush immediately
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
+	}
+
+	return nil
+}
+
+// WriteSSEErrorEvent sends a safe error event to an active SSE client.
+func WriteSSEErrorEvent(w http.ResponseWriter, message string) error {
+	payload, err := json.Marshal(map[string]string{
+		"error": message,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to marshal SSE error: %w", err)
+	}
+
+	_, err = fmt.Fprintf(w, "event: error\ndata: %s\n\n", payload)
+	if err != nil {
+		return fmt.Errorf("failed to write SSE error event: %w", err)
+	}
+
 	if flusher, ok := w.(http.Flusher); ok {
 		flusher.Flush()
 	}
