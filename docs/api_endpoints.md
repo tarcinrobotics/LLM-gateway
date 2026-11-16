@@ -2,6 +2,41 @@
 
 The LLM Gateway is split into **Public**, **Consumer**, and **Admin** endpoints.
 
+## Cross-Origin Resource Sharing (CORS)
+
+The gateway supports browser-based cross-origin requests through a configurable origin allowlist.
+
+Configure trusted frontend origins in `config.yaml`:
+
+```yaml
+cors:
+  allowed_origins:
+    - "http://localhost:5173"
+```
+
+The example above is intended for local development. The default configuration uses an empty allowlist, which grants no cross-origin browser access.
+
+### CORS Rules
+
+- The request's `Origin` must exactly match an entry in `cors.allowed_origins`.
+- Matching includes the scheme, hostname, and port.
+- Wildcard (`*`) origins are not supported.
+- Supported preflight methods are `GET`, `POST`, and `DELETE`.
+- Supported preflight request headers are `Authorization`, `Content-Type`, and `X-API-Key`.
+- Disallowed origins, methods, and requested headers do not receive CORS permission.
+- The gateway adds `Vary: Origin` so responses can be cached correctly based on the requesting origin.
+
+### Preflight and Authentication
+
+Browsers may send an `OPTIONS` preflight request before the actual cross-origin request. A valid preflight request from an allowed origin is handled without requiring API-key or admin credentials.
+
+This does not bypass authentication for the actual request:
+
+- Consumer endpoints still require a valid API key.
+- Admin endpoints still require HTTP Basic Authentication.
+- Credentialed CORS is not enabled.
+- Requests without an `Origin` header continue through the application normally.
+
 ## 1. Public Endpoints
 
 Public endpoints do not require any authentication.

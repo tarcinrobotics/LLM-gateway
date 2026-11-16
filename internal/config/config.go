@@ -13,6 +13,7 @@ type Config struct {
 	Ollama   OllamaConfig   `yaml:"ollama"`
 	Queue    QueueConfig    `yaml:"queue"`
 	Logging  LoggingConfig  `yaml:"logging"`
+	CORS     CORSConfig     `yaml:"cors"`
 }
 
 type ServerConfig struct {
@@ -37,6 +38,10 @@ type QueueConfig struct {
 	Workers        int `yaml:"workers"`
 	MaxSize        int `yaml:"max_size"`
 	TimeoutSeconds int `yaml:"timeout_seconds"`
+}
+
+type CORSConfig struct {
+	AllowedOrigins []string `yaml:"allowed_origins"`
 }
 
 type LoggingConfig struct {

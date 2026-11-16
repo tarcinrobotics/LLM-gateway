@@ -16,6 +16,22 @@ A high-performance, secure Go-based reverse proxy and gateway for Ollama LLMs. I
 2. Run `./setup.sh` to compile the React UI and the Go server into a single binary.
 3. Run `./start.sh` to launch the Gateway on `http://localhost:8080`.
 
+### CORS Configuration for Local Development
+
+If your frontend runs on a different origin from the gateway, configure its origin in `config.yaml`:
+
+```yaml
+cors:
+  allowed_origins:
+    - "http://localhost:5173"
+```
+
+The example above assumes a local frontend development server running on port `5173`.
+
+By default, `cors.allowed_origins` is an empty list, so cross-origin browser access is not permitted until trusted origins are configured.
+
+For production deployments, replace the development origin with the exact trusted frontend origin. See `docs/security.md` for CORS security rules and `docs/api_endpoints.md` for preflight behavior.
+
 ## Timeout Configuration
 
 The gateway uses separate timeouts for queue waiting and Ollama inference.

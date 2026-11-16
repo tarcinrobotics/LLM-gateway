@@ -86,6 +86,66 @@ By default, the server is running in HTTP mode (`tls_enabled: false` in `config.
 ### Automatic Certificate Generation
 
 If you enable TLS, the `internal/tls/` package will look for `server.crt` and `server.key` inside the `certs/` folder.
+
 If these files do not exist, the gateway will **automatically generate self-signed RSA certificates** on boot.
 
 For production deployments, replace the contents of the `certs/` folder with valid SSL certificates (e.g., from Let's Encrypt or your internal Corporate CA) to avoid browser security warnings.
+
+## Cross-Origin Resource Sharing (CORS)
+
+The gateway uses an explicit CORS allowlist to control which browser-based frontends may access the API from a different origin.
+
+CORS is configured in `config.yaml`:
+
+```yaml
+cors:
+  allowed_origins: []
+```
+
+An empty list is the default and grants no cross-origin browser access.
+
+### Local Development
+
+If your frontend development server runs at `http://localhost:5173`, add this origin to the allowlist:
+
+```yaml
+cors:
+  allowed_origins:
+    - "http://localhost:5173"
+```
+
+This is a development example only. Production deployments must configure their actual trusted frontend origins.
+
+### Origin Matching
+
+- Origins must match exactly, including scheme, hostname, and port.
+- `http://localhost:5173` and `https://localhost:5173` are different origins.
+- Wildcard (`*`) origins are not supported.
+- Do not include URL paths or trailing slashes in configured origins.
+
+### Preflight Requests
+
+For an allowed origin, the gateway supports CORS preflight requests for these methods:
+
+- `GET`
+- `POST`
+- `DELETE`
+
+The following request headers are permitted:
+
+- `Authorization`
+- `Content-Type`
+- `X-API-Key`
+
+Preflight requests with a disallowed origin, unsupported method, or unsupported requested header are rejected.
+
+The gateway does not enable credentialed CORS.
+
+### Authentication Is Still Required
+
+CORS is not an authentication mechanism.
+
+- Consumer endpoints still require valid API keys.
+- Admin endpoints still require HTTP Basic Authentication.
+- Allowing a frontend origin does not grant access to protected endpoints.
+- Requests without an `Origin` header continue through the application normally.

@@ -21,3 +21,9 @@ queue:
 logging:
   file_path: "logs/gateway.log"
   level: "info"
+
+cors:
+  allowed_origins: []
+  # Development example:
+  # allowed_origins:
+  #   - "http://localhost:5173"

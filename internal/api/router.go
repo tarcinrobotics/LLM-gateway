@@ -21,6 +21,7 @@ func NewRouter(
 	discovery *ollama.ModelDiscovery,
 	queueTimeout time.Duration,
 	inferenceTimeout time.Duration,
+	allowedOrigins []string,
 ) http.Handler {
 	mux := http.NewServeMux()
 
@@ -64,7 +65,6 @@ func NewRouter(
 	var handler http.Handler = mux
 	handler = middleware.LoggingMiddleware(handler)
 	handler = middleware.RecoveryMiddleware(handler)
-	handler = middleware.CORSMiddleware(handler)
-
+	handler = middleware.CORSMiddleware(allowedOrigins)(handler)
 	return handler
 }
