@@ -88,6 +88,28 @@ Retrieves a list of available models from the backend Ollama instance.
 }
 ```
 
+#### Model Discovery Cache Behavior
+
+The gateway caches the model list retrieved from the Ollama backend to reduce repeated upstream requests.
+
+**Cache Configuration and Behavior**
+
+- **Cache TTL:** 1 minute (60 seconds).
+- **Cache scope:** In-memory, per gateway process. Each gateway instance maintains its own independent cache.
+- **Cache hit:** Requests within the TTL receive the cached model list without contacting Ollama.
+- **Cache expiration:** Once the TTL expires, the next request to `GET /api/v1/models` triggers a fresh request to Ollama's `/api/tags` endpoint.
+- **Successful refresh:** The newly retrieved model list replaces the previous cached list, and the TTL starts again.
+- **Failed refresh:** The endpoint returns `500 Internal Server Error`. The expired cached list is not served as a fallback. A subsequent request retries the upstream fetch.
+- **Empty model list:** A valid empty model array (`"models": []`) is cached like any other successful response.
+
+**Model Updates**
+
+When an administrator adds or removes a model from Ollama, the change becomes visible through the gateway after the cache expires and a subsequent model-list request successfully refreshes it.
+
+Under normal conditions, the maximum cache delay is approximately 60 seconds, plus the time until the next request and the upstream response time.
+
+For multiple gateway instances, each instance refreshes its cache independently. There is no shared cache or cross-instance invalidation mechanism.
+
 ### `POST /api/v1/chat`
 
 Sends a prompt to a specific LLM.
