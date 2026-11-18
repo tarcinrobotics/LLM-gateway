@@ -86,28 +86,49 @@ func ChatHandler(
 			queueTimeout,
 			inferenceTimeout,
 		)
-		if err != nil {
-			metrics.RecordRequest(false, time.Since(startTime).Milliseconds())
 
+		if err != nil {
 			if errors.Is(err, context.Canceled) {
-				slog.Info("Chat request cancelled", slog.String("request_id", reqID))
+				slog.Info("Client cancelled request", slog.Any("error", err))
 				return
 			}
 
 			if errors.Is(err, queue.ErrQueueTimeout) {
-				slog.Error("Queue wait timeout",
-					slog.String("request_id", reqID),
-					slog.Duration("timeout", queueTimeout),
+				slog.Error("Queue wait timeout", slog.Any("error", err))
+				respondJSONError(
+					w,
+					http.StatusGatewayTimeout,
+					"Gateway Timeout: Request spent too long waiting in the queue",
 				)
-				respondJSONError(w, http.StatusGatewayTimeout, "Gateway Timeout: Request spent too long waiting in the queue")
 				return
 			}
 
-			slog.Error("Queue submission failed",
-				slog.String("request_id", reqID),
-				slog.Any("error", err),
+			if errors.Is(err, queue.ErrQueueFull) {
+				slog.Warn("Worker queue is full", slog.Any("error", err))
+				respondJSONError(
+					w,
+					http.StatusServiceUnavailable,
+					"Service Unavailable: Worker queue is full. Please try again later",
+				)
+				return
+			}
+
+			if errors.Is(err, queue.ErrWorkerPoolStopped) {
+				slog.Warn("Worker pool is shutting down", slog.Any("error", err))
+				respondJSONError(
+					w,
+					http.StatusServiceUnavailable,
+					"Service Unavailable: Server is shutting down and cannot accept new requests",
+				)
+				return
+			}
+
+			slog.Error("Queue submission failed", slog.Any("error", err))
+			respondJSONError(
+				w,
+				http.StatusInternalServerError,
+				"Internal Server Error: Failed to process request",
 			)
-			respondJSONError(w, http.StatusServiceUnavailable, "Service Unavailable: Worker queue is full")
 			return
 		}
 

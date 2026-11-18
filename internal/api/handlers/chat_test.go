@@ -1,11 +1,13 @@
 package handlers
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -38,6 +40,19 @@ func setupChatTest(
 	ollamaHandler http.HandlerFunc,
 ) http.Handler {
 	t.Helper()
+	wp := queue.NewWorkerPool(1, 10)
+	wp.Start()
+
+	return setupChatTestWithWorkerPool(t, ollamaHandler, wp, true)
+}
+
+func setupChatTestWithWorkerPool(
+	t *testing.T,
+	ollamaHandler http.HandlerFunc,
+	wp *queue.WorkerPool,
+	expectAudit bool,
+) http.Handler {
+	t.Helper()
 
 	// Start a fake Ollama HTTP server.
 	server := httptest.NewServer(ollamaHandler)
@@ -49,26 +64,32 @@ func setupChatTest(
 	if err != nil {
 		t.Fatalf("failed to initialize test database: %v", err)
 	}
+
 	t.Cleanup(func() {
-		// Wait for the asynchronous audit log to be written.
-		deadline := time.Now().Add(2 * time.Second)
+		if expectAudit {
+			// Wait for the asynchronous audit log to be written.
+			deadline := time.Now().Add(2 * time.Second)
 
-		for {
-			var count int
-			err := db.QueryRow(
-				"SELECT COUNT(*) FROM request_logs",
-			).Scan(&count)
+			for {
+				var count int
+				err := db.QueryRow(
+					"SELECT COUNT(*) FROM request_logs",
+				).Scan(&count)
+				if err == nil && count > 0 {
+					break
+				}
 
-			if err == nil && count > 0 {
-				break
+				if time.Now().After(deadline) {
+					t.Errorf(
+						"timed out waiting for audit log: count=%d, error=%v",
+						count,
+						err,
+					)
+					break
+				}
+
+				time.Sleep(10 * time.Millisecond)
 			}
-
-			if time.Now().After(deadline) {
-				t.Errorf("timed out waiting for audit log: count=%d, error=%v", count, err)
-				break
-			}
-
-			time.Sleep(10 * time.Millisecond)
 		}
 
 		if err := db.Close(); err != nil {
@@ -87,9 +108,6 @@ func setupChatTest(
 		t.Fatalf("failed to create test API key: %v", err)
 	}
 
-	// Start one worker for the test.
-	wp := queue.NewWorkerPool(1, 10)
-	wp.Start()
 	t.Cleanup(wp.Stop)
 
 	client := ollama.NewClient(server.URL, time.Second)
@@ -253,6 +271,7 @@ func TestChatStreamingWithoutCompletionSignal(t *testing.T) {
 		t.Fatal("expected an SSE error event for incomplete stream")
 	}
 }
+
 func TestChatStreamingClientDisconnectCancelsInference(t *testing.T) {
 	cancelled := make(chan struct{})
 
@@ -300,5 +319,143 @@ func TestChatStreamingClientDisconnectCancelsInference(t *testing.T) {
 		// Upstream inference was successfully cancelled.
 	case <-time.After(2 * time.Second):
 		t.Fatal("expected client disconnect to cancel upstream inference")
+	}
+}
+
+func TestChatQueueFullReturnsServiceUnavailable(t *testing.T) {
+	var requestCount atomic.Int32
+
+	// Zero-capacity queue with no worker started:
+	// submission must be rejected immediately.
+	wp := queue.NewWorkerPool(1, 0)
+
+	handler := setupChatTestWithWorkerPool(t, func(w http.ResponseWriter, r *http.Request) {
+		requestCount.Add(1)
+	}, wp, false)
+
+	recorder := sendStreamingRequest(handler)
+
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf(
+			"expected HTTP 503, got %d: %s",
+			recorder.Code,
+			recorder.Body.String(),
+		)
+	}
+
+	if !strings.Contains(recorder.Body.String(), "Worker queue is full") {
+		t.Fatalf("expected queue-full message, got: %s", recorder.Body.String())
+	}
+
+	if got := requestCount.Load(); got != 0 {
+		t.Fatalf("expected no Ollama requests, got %d", got)
+	}
+}
+
+func TestChatWorkerPoolStoppedReturnsServiceUnavailable(t *testing.T) {
+	var requestCount atomic.Int32
+
+	wp := queue.NewWorkerPool(1, 10)
+	wp.BeginShutdown()
+
+	handler := setupChatTestWithWorkerPool(t, func(w http.ResponseWriter, r *http.Request) {
+		requestCount.Add(1)
+	}, wp, false)
+
+	recorder := sendStreamingRequest(handler)
+
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf(
+			"expected HTTP 503, got %d: %s",
+			recorder.Code,
+			recorder.Body.String(),
+		)
+	}
+
+	if !strings.Contains(recorder.Body.String(), "Server is shutting down") {
+		t.Fatalf("expected shutdown message, got: %s", recorder.Body.String())
+	}
+
+	if got := requestCount.Load(); got != 0 {
+		t.Fatalf("expected no Ollama requests, got %d", got)
+	}
+}
+
+func TestChatQueueTimeoutReturnsGatewayTimeout(t *testing.T) {
+	upstreamStarted := make(chan struct{})
+	releaseUpstream := make(chan struct{})
+
+	wp := queue.NewWorkerPool(1, 1)
+	wp.Start()
+
+	handler := setupChatTestWithWorkerPool(t, func(w http.ResponseWriter, r *http.Request) {
+		close(upstreamStarted)
+
+		// Keep the first inference active until the test releases it.
+		<-releaseUpstream
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("{}"))
+	}, wp, false)
+
+	// Start one request and keep its inference active.
+	firstCtx, cancelFirst := context.WithCancel(context.Background())
+	defer cancelFirst()
+
+	firstBody := `{
+		"model": "test-model",
+		"stream": false,
+		"messages": [
+			{"role": "user", "content": "First request"}
+		]
+	}`
+
+	firstReq := httptest.NewRequest(
+		http.MethodPost,
+		"/v1/chat/completions",
+		strings.NewReader(firstBody),
+	).WithContext(firstCtx)
+
+	firstReq.Header.Set("Content-Type", "application/json")
+	firstReq.Header.Set("Authorization", "Bearer "+testAPIKey)
+
+	firstDone := make(chan struct{})
+
+	go func() {
+		defer close(firstDone)
+		handler.ServeHTTP(httptest.NewRecorder(), firstReq)
+	}()
+
+	select {
+	case <-upstreamStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first request did not reach fake Ollama server")
+	}
+
+	// The worker is occupied by the first request.
+	// The second request enters the queue and must time out.
+	recorder := sendStreamingRequest(handler)
+
+	if recorder.Code != http.StatusGatewayTimeout {
+		t.Fatalf(
+			"expected HTTP 504, got %d: %s",
+			recorder.Code,
+			recorder.Body.String(),
+		)
+	}
+
+	if !strings.Contains(recorder.Body.String(), "too long waiting in the queue") {
+		t.Fatalf("expected queue-timeout message, got: %s", recorder.Body.String())
+	}
+
+	// Cancel the first request and release the fake server handler.
+	cancelFirst()
+	close(releaseUpstream)
+
+	select {
+	case <-firstDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first handler did not finish after cancellation")
 	}
 }

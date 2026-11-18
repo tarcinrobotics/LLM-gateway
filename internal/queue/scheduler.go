@@ -13,7 +13,11 @@ import (
 // ScheduleJob submits a chat request and waits for a worker to claim it.
 // Queue timeout applies only until worker pickup. Inference timeout starts
 // inside the worker after the job has been claimed.
-var ErrQueueTimeout = errors.New("queue wait timeout")
+var (
+	ErrQueueTimeout      = errors.New("queue wait timeout")
+	ErrQueueFull         = errors.New("worker queue is full")
+	ErrWorkerPoolStopped = errors.New("worker pool is shutting down")
+)
 
 func ScheduleJob(
 	ctx context.Context,
@@ -45,7 +49,7 @@ func ScheduleJob(
 	}
 
 	if err := wp.Submit(job); err != nil {
-		return JobResult{}, fmt.Errorf("scheduler queue full: %w", err)
+		return JobResult{}, fmt.Errorf("failed to submit job: %w", err)
 	}
 
 	// Wait until a worker claims the job or the queue deadline expires.
