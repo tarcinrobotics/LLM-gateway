@@ -13,6 +13,7 @@ type Config struct {
 	Ollama   OllamaConfig   `yaml:"ollama"`
 	Queue    QueueConfig    `yaml:"queue"`
 	Logging  LoggingConfig  `yaml:"logging"`
+	CORS     CORSConfig     `yaml:"cors"`
 }
 
 type ServerConfig struct {
@@ -28,14 +29,19 @@ type DatabaseConfig struct {
 }
 
 type OllamaConfig struct {
-	URL                  string `yaml:"url"`
-	ClientTimeoutSeconds int    `yaml:"client_timeout_seconds"`
+	URL                     string `yaml:"url"`
+	ClientTimeoutSeconds    int    `yaml:"client_timeout_seconds"`
+	InferenceTimeoutSeconds int    `yaml:"inference_timeout_seconds"`
 }
 
 type QueueConfig struct {
 	Workers        int `yaml:"workers"`
 	MaxSize        int `yaml:"max_size"`
 	TimeoutSeconds int `yaml:"timeout_seconds"`
+}
+
+type CORSConfig struct {
+	AllowedOrigins []string `yaml:"allowed_origins"`
 }
 
 type LoggingConfig struct {
@@ -85,6 +91,9 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if cfg.Ollama.ClientTimeoutSeconds == 0 {
 		cfg.Ollama.ClientTimeoutSeconds = 30
+	}
+	if cfg.Ollama.InferenceTimeoutSeconds == 0 {
+		cfg.Ollama.InferenceTimeoutSeconds = 120
 	}
 	if cfg.Queue.Workers == 0 {
 		cfg.Queue.Workers = 5

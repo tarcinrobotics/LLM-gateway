@@ -11,6 +11,7 @@ database:
 ollama:
   url: "http://localhost:11434"
   client_timeout_seconds: 30
+  inference_timeout_seconds: 120
 
 queue:
   workers: 5
@@ -20,3 +21,9 @@ queue:
 logging:
   file_path: "logs/gateway.log"
   level: "info"
+
+cors:
+  allowed_origins: []
+  # Development example:
+  # allowed_origins:
+  #   - "http://localhost:5173"

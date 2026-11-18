@@ -24,6 +24,5 @@ func ExtractAPIKey(r *http.Request) string {
 		return apiKey
 	}
 
-	// Fallback to query parameter (optional, useful for testing)
-	return r.URL.Query().Get("api_key")
+	return ""
 }

@@ -131,7 +131,7 @@ func InitDB(path string) (*sql.DB, error) {
 	return db, nil
 }
 
-// SeedData inserts default roles, users, permissions, and initial test API keys.
+// SeedData inserts default roles, users, and permissions.
 func SeedData(db *sql.DB) error {
 	// Seed roles
 	_, err := db.Exec(`
@@ -181,27 +181,6 @@ func SeedData(db *sql.DB) error {
 			if err != nil {
 				return fmt.Errorf("failed to seed permission for model %q: %w", modelTrimmed, err)
 			}
-		}
-	}
-
-	// Seed the default test key from test.sh if not exists
-	testKey := "gw_86e95dbb09274255564ca7d9e63dd13b"
-	testKeyHash := HashKey(testKey)
-
-	var exists bool
-	err = db.QueryRow("SELECT EXISTS(SELECT 1 FROM api_keys WHERE hash = ?)", testKeyHash).Scan(&exists)
-	if err != nil {
-		return fmt.Errorf("failed to check existing test key: %w", err)
-	}
-
-	if !exists {
-		// Create test API Key with Admin role (role_id = 1) so it has access to admin endpoints during test.sh
-		_, err = db.Exec(`
-			INSERT INTO api_keys (id, prefix, hash, user_id, role_id, rate_limit_rpm, is_active)
-			VALUES (1, ?, ?, 1, 1, 120, 1)
-		`, "gw_86e95dbb", testKeyHash)
-		if err != nil {
-			return fmt.Errorf("failed to seed test api key: %w", err)
 		}
 	}
 

@@ -2,33 +2,82 @@ package queue
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"sync"
+	"time"
 
 	"llm_gateway/internal/ollama"
 )
 
-// ScheduleJob schedules a chat completion job on the worker pool.
-// It returns a JobResult which contains either the final response (non-stream)
-// or a channel of streaming chunks.
-func ScheduleJob(ctx context.Context, wp *WorkerPool, client *ollama.Client, req *ollama.ChatRequest) (JobResult, error) {
+// ScheduleJob submits a chat request and waits for a worker to claim it.
+// Queue timeout applies only until worker pickup. Inference timeout starts
+// inside the worker after the job has been claimed.
+var (
+	ErrQueueTimeout      = errors.New("queue wait timeout")
+	ErrQueueFull         = errors.New("worker queue is full")
+	ErrWorkerPoolStopped = errors.New("worker pool is shutting down")
+)
+
+func ScheduleJob(
+	ctx context.Context,
+	wp *WorkerPool,
+	client *ollama.Client,
+	req *ollama.ChatRequest,
+	queueTimeout time.Duration,
+	inferenceTimeout time.Duration,
+) (JobResult, error) {
+	queueCtx, cancelQueue := context.WithTimeout(ctx, queueTimeout)
+	defer cancelQueue()
+
 	resultChan := make(chan JobResult, 1)
+	pickedUp := make(chan struct{})
+
+	claimMu := &sync.Mutex{}
+	claimed := false
+
 	job := Job{
-		Ctx:          ctx,
-		Req:          req,
-		OllamaClient: client,
-		ResultChan:   resultChan,
+		Ctx:              ctx,
+		QueueCtx:         queueCtx,
+		InferenceTimeout: inferenceTimeout,
+		Req:              req,
+		OllamaClient:     client,
+		ResultChan:       resultChan,
+		PickedUp:         pickedUp,
+		ClaimMu:          claimMu,
+		Claimed:          &claimed,
 	}
 
-	// Try to submit to the queue
 	if err := wp.Submit(job); err != nil {
-		return JobResult{}, fmt.Errorf("scheduler queue full: %w", err)
+		return JobResult{}, fmt.Errorf("failed to submit job: %w", err)
 	}
 
-	// Wait for worker pickup or context expiration
+	// Wait until a worker claims the job or the queue deadline expires.
 	select {
+	case <-pickedUp:
+		// The worker has claimed the job. Queue timeout no longer applies.
+	case <-queueCtx.Done():
+		if ctx.Err() != nil {
+			return JobResult{}, ctx.Err()
+		}
+
+		claimMu.Lock()
+		wasClaimed := claimed
+		claimMu.Unlock()
+
+		if !wasClaimed {
+			return JobResult{}, fmt.Errorf("%w: %v", ErrQueueTimeout, queueCtx.Err())
+		}
 	case <-ctx.Done():
 		return JobResult{}, ctx.Err()
+	}
+
+	// For streaming, return the channels as soon as the worker creates them.
+	// For non-streaming, wait for the completed inference result.
+	select {
 	case res := <-resultChan:
 		return res, nil
+	case <-ctx.Done():
+		return JobResult{}, ctx.Err()
 	}
 }
