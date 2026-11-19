@@ -27,6 +27,7 @@ func NewRouter(
 
 	// 1. Public Endpoints
 	mux.HandleFunc("GET /health", handlers.HealthHandler(db, wp))
+	mux.HandleFunc("GET /ready", handlers.ReadinessHandler(db, wp, ollamaClient))
 
 	// Initialize middleware config
 	rateLimiter := middleware.NewRateLimiter()

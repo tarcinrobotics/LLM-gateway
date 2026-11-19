@@ -184,6 +184,14 @@ func (wp *WorkerPool) QueueCapacity() int {
 	return wp.maxQueue
 }
 
+// IsStopping reports whether the worker pool has begun shutting down.
+func (wp *WorkerPool) IsStopping() bool {
+	wp.mu.Lock()
+	defer wp.mu.Unlock()
+
+	return wp.stopping
+}
+
 // claimJob atomically checks the queue deadline and marks the job as claimed.
 func (job Job) claimJob() bool {
 	job.ClaimMu.Lock()

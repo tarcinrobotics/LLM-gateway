@@ -31,6 +31,30 @@ func NewClient(baseURL string, timeout time.Duration) *Client {
 	}
 }
 
+// CheckHealth checks whether the Ollama service is reachable.
+// It uses the lightweight /api/version endpoint without requiring a model
+// or performing inference. The supplied context controls cancellation.
+func (c *Client) CheckHealth(ctx context.Context) error {
+	reqURL := fmt.Sprintf("%s/api/version", c.baseURL)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create Ollama health request: %w", err)
+	}
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to reach Ollama: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("Ollama health check returned status code %d", resp.StatusCode)
+	}
+
+	return nil
+}
+
 // ListModels queries the /api/tags endpoint to dynamically fetch all loaded models.
 func (c *Client) ListModels(ctx context.Context) ([]ModelInfo, error) {
 	reqUrl := fmt.Sprintf("%s/api/tags", c.baseURL)
@@ -82,7 +106,6 @@ func (c *Client) Chat(ctx context.Context, chatReq *ChatRequest, onChunk func(Ch
 
 	if resp.StatusCode != http.StatusOK {
 		defer resp.Body.Close()
-		// Attempt to read error message
 		body, _ := io.ReadAll(resp.Body)
 		return nil, fmt.Errorf("ollama API returned status %d: %s", resp.StatusCode, string(body))
 	}

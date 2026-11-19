@@ -50,6 +50,54 @@ The Ollama client timeout must not impose a shorter limit on chat inference.
 
 For detailed API documentation, check `docs/api_endpoints.md`.
 
+## Health and Readiness Checks
+
+The gateway provides two endpoints for monitoring its health and readiness.
+
+### `GET /health`
+
+Reports the gateway's existing health information, including database status and worker pool statistics.
+
+| HTTP Status               | Description                     |
+| ------------------------- | ------------------------------- |
+| `200 OK`                  | SQLite database is reachable.   |
+| `503 Service Unavailable` | SQLite database is unavailable. |
+
+The response includes the gateway status, database health, active workers, queue length, and queue capacity.
+
+### `GET /ready`
+
+Checks whether the gateway is ready to serve requests by verifying SQLite database connectivity and actual Ollama service reachability through the lightweight `/api/version` endpoint.
+
+| HTTP Status               | Description                                                                     |
+| ------------------------- | ------------------------------------------------------------------------------- |
+| `200 OK`                  | Both SQLite and Ollama are reachable, and the worker pool is not shutting down. |
+| `503 Service Unavailable` | Either dependency is unavailable, a check times out, or shutdown has started.   |
+
+Example successful response:
+
+```json
+{
+  "status": "ready",
+  "database": "ready",
+  "ollama": "ready"
+}
+```
+
+Example response when a dependency is unavailable:
+
+```json
+{
+  "status": "not_ready",
+  "database": "ready",
+  "ollama": "unavailable"
+}
+```
+
+The readiness checks use a combined timeout of 2 seconds and respect incoming request cancellation. Readiness is also disabled as soon as worker pool shutdown begins.
+
+The `/health` endpoint retains its existing response format and behavior, while `/ready` provides dependency-aware readiness information for deployment and monitoring systems.
+
 ## Queue Management
 
 The gateway uses a bounded in-memory FIFO queue and a fixed-size worker pool to manage Ollama requests.
