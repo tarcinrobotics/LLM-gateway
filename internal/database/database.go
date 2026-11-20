@@ -27,7 +27,8 @@ type APIKey struct {
 	ExpiresAt    *time.Time `json:"expires_at"`
 }
 
-// RequestLog represents the audit log for LLM requests.
+// RequestLog represents the existing audit log for LLM requests.
+// This structure and its database table are retained for compatibility.
 type RequestLog struct {
 	ID               int64     `json:"id"`
 	RequestID        string    `json:"request_id"`
@@ -42,6 +43,20 @@ type RequestLog struct {
 	CreatedAt        time.Time `json:"created_at"`
 }
 
+// AuditEvent represents a privacy-conscious record of a request outcome.
+// It intentionally does not contain prompts, responses, credentials,
+// IP addresses, or raw upstream error messages.
+type AuditEvent struct {
+	ID         int64     `json:"id"`
+	RequestID  string    `json:"request_id"`
+	EventType  string    `json:"event_type"`
+	Outcome    string    `json:"outcome"`
+	StatusCode int       `json:"status_code"`
+	APIKeyID   *int64    `json:"api_key_id,omitempty"`
+	ErrorCode  string    `json:"error_code,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
+}
+
 // Permission represents a model access permission for a role.
 type Permission struct {
 	ID        int64  `json:"id"`
@@ -49,28 +64,27 @@ type Permission struct {
 	ModelName string `json:"model_name"`
 }
 
-// InitDB initializes the SQLite database, creating directory and tables if they don't exist.
+// InitDB initializes the SQLite database, creating directories and tables
+// if they do not already exist.
 func InitDB(path string) (*sql.DB, error) {
-	// Create directory if not exists
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create database directory: %w", err)
 	}
 
-	// Open database connection
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
 
-	// Set connection limits and enable WAL mode for concurrency
+	// Keep the existing connection limit and WAL configuration.
 	db.SetMaxOpenConns(1)
+
 	if _, err := db.Exec("PRAGMA journal_mode=WAL;"); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("failed to enable WAL mode: %w", err)
 	}
 
-	// Create tables schema
 	schema := `
 	CREATE TABLE IF NOT EXISTS roles (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -108,6 +122,7 @@ func InitDB(path string) (*sql.DB, error) {
 		FOREIGN KEY(role_id) REFERENCES roles(id)
 	);
 
+	-- Retain the existing table unchanged for compatibility.
 	CREATE TABLE IF NOT EXISTS request_logs (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		request_id TEXT NOT NULL,
@@ -122,7 +137,31 @@ func InitDB(path string) (*sql.DB, error) {
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 		FOREIGN KEY(api_key_id) REFERENCES api_keys(id)
 	);
+
+	-- New table for consistent request outcome auditing.
+	CREATE TABLE IF NOT EXISTS audit_events (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		request_id TEXT NOT NULL,
+		event_type TEXT NOT NULL,
+		outcome TEXT NOT NULL
+			CHECK (outcome IN ('success', 'failure', 'cancelled')),
+		status_code INTEGER NOT NULL,
+		api_key_id INTEGER,
+		error_code TEXT,
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		FOREIGN KEY(api_key_id) REFERENCES api_keys(id)
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_audit_events_request_id
+		ON audit_events(request_id);
+
+	CREATE INDEX IF NOT EXISTS idx_audit_events_created_at
+		ON audit_events(created_at);
+
+	CREATE INDEX IF NOT EXISTS idx_audit_events_api_key_id
+		ON audit_events(api_key_id);
 	`
+
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("failed to execute tables schema: %w", err)
@@ -133,7 +172,6 @@ func InitDB(path string) (*sql.DB, error) {
 
 // SeedData inserts default roles, users, and permissions.
 func SeedData(db *sql.DB) error {
-	// Seed roles
 	_, err := db.Exec(`
 		INSERT OR IGNORE INTO roles (id, name) VALUES
 		(1, 'Admin'),
@@ -144,8 +182,7 @@ func SeedData(db *sql.DB) error {
 		return fmt.Errorf("failed to seed roles: %w", err)
 	}
 
-	// Seed default admin user
-	// We use a dummy hash because admin routes authenticate directly against .env variables.
+	// Admin routes authenticate directly against environment variables.
 	_, err = db.Exec(`
 		INSERT OR IGNORE INTO users (id, username, password_hash, role_id)
 		VALUES (1, 'admin', 'dummy_hash_auth_is_in_env', 1)
@@ -154,8 +191,6 @@ func SeedData(db *sql.DB) error {
 		return fmt.Errorf("failed to seed default admin user: %w", err)
 	}
 
-	// Seed default permissions
-	// Admin and Developer roles can access all models ("*")
 	_, err = db.Exec(`
 		INSERT OR IGNORE INTO permissions (role_id, model_name) VALUES
 		(1, '*'),
@@ -165,22 +200,28 @@ func SeedData(db *sql.DB) error {
 		return fmt.Errorf("failed to seed admin/developer permissions: %w", err)
 	}
 
-	// Consumer role permissions are seeded from ALLOWED_MODELS env var
 	allowedModelsEnv := os.Getenv("ALLOWED_MODELS")
 	if allowedModelsEnv == "" {
 		allowedModelsEnv = "qwen2.5:3b-instruct"
 	}
+
 	modelsList := strings.Split(allowedModelsEnv, ",")
 	for _, model := range modelsList {
 		modelTrimmed := strings.TrimSpace(model)
-		if modelTrimmed != "" {
-			_, err = db.Exec(`
-				INSERT OR IGNORE INTO permissions (role_id, model_name)
-				VALUES (3, ?)
-			`, modelTrimmed)
-			if err != nil {
-				return fmt.Errorf("failed to seed permission for model %q: %w", modelTrimmed, err)
-			}
+		if modelTrimmed == "" {
+			continue
+		}
+
+		_, err = db.Exec(`
+			INSERT OR IGNORE INTO permissions (role_id, model_name)
+			VALUES (3, ?)
+		`, modelTrimmed)
+		if err != nil {
+			return fmt.Errorf(
+				"failed to seed permission for model %q: %w",
+				modelTrimmed,
+				err,
+			)
 		}
 	}
 
@@ -199,20 +240,33 @@ func GenerateRandomKey() (string, error) {
 	if _, err := rand.Read(bytes); err != nil {
 		return "", err
 	}
+
 	return "gw_" + hex.EncodeToString(bytes), nil
 }
 
 // GetAPIKeyByHash retrieves an API key from the database by its SHA-256 hash.
 func GetAPIKeyByHash(db *sql.DB, hash string) (*APIKey, error) {
 	row := db.QueryRow(`
-		SELECT id, prefix, hash, user_id, role_id, rate_limit_rpm, is_active, created_at, expires_at
+		SELECT id, prefix, hash, user_id, role_id, rate_limit_rpm,
+		       is_active, created_at, expires_at
 		FROM api_keys
 		WHERE hash = ?
 	`, hash)
 
 	var k APIKey
 	var expiresAt sql.NullTime
-	err := row.Scan(&k.ID, &k.Prefix, &k.Hash, &k.UserID, &k.RoleID, &k.RateLimitRPM, &k.IsActive, &k.CreatedAt, &expiresAt)
+
+	err := row.Scan(
+		&k.ID,
+		&k.Prefix,
+		&k.Hash,
+		&k.UserID,
+		&k.RoleID,
+		&k.RateLimitRPM,
+		&k.IsActive,
+		&k.CreatedAt,
+		&expiresAt,
+	)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
@@ -228,15 +282,22 @@ func GetAPIKeyByHash(db *sql.DB, hash string) (*APIKey, error) {
 }
 
 // CreateAPIKey creates, hashes, and stores a new API key.
-func CreateAPIKey(db *sql.DB, plainKey string, userID, roleID int64, rateLimitRPM int) (*APIKey, error) {
+func CreateAPIKey(
+	db *sql.DB,
+	plainKey string,
+	userID, roleID int64,
+	rateLimitRPM int,
+) (*APIKey, error) {
 	prefix := plainKey
 	if len(plainKey) > 11 {
 		prefix = plainKey[:11]
 	}
+
 	hash := HashKey(plainKey)
 
 	res, err := db.Exec(`
-		INSERT INTO api_keys (prefix, hash, user_id, role_id, rate_limit_rpm, is_active)
+		INSERT INTO api_keys
+			(prefix, hash, user_id, role_id, rate_limit_rpm, is_active)
 		VALUES (?, ?, ?, ?, ?, 1)
 	`, prefix, hash, userID, roleID, rateLimitRPM)
 	if err != nil {
@@ -260,7 +321,7 @@ func CreateAPIKey(db *sql.DB, plainKey string, userID, roleID int64, rateLimitRP
 	}, nil
 }
 
-// GetPermissionsByRole retrieves all model permission rules for a specific role ID.
+// GetPermissionsByRole retrieves all model permission rules for a role ID.
 func GetPermissionsByRole(db *sql.DB, roleID int64) ([]Permission, error) {
 	rows, err := db.Query(`
 		SELECT id, role_id, model_name
@@ -281,20 +342,126 @@ func GetPermissionsByRole(db *sql.DB, roleID int64) ([]Permission, error) {
 		perms = append(perms, p)
 	}
 
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
 	return perms, nil
 }
 
-// WriteRequestLog inserts a new request audit log entry.
+// WriteRequestLog inserts an entry into the legacy request_logs table.
+// New request outcome auditing should use WriteAuditEvent instead.
 func WriteRequestLog(db *sql.DB, log *RequestLog) error {
 	var errMsg sql.NullString
 	if log.ErrorMessage != "" {
-		errMsg = sql.NullString{String: log.ErrorMessage, Valid: true}
+		errMsg = sql.NullString{
+			String: log.ErrorMessage,
+			Valid:  true,
+		}
 	}
 
 	_, err := db.Exec(`
-		INSERT INTO request_logs (request_id, api_key_id, model, latency_ms, status_code, ip_address, prompt_tokens, completion_tokens, error_message)
+		INSERT INTO request_logs (
+			request_id, api_key_id, model, latency_ms, status_code,
+			ip_address, prompt_tokens, completion_tokens, error_message
+		)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, log.RequestID, log.APIKeyID, log.Model, log.LatencyMS, log.StatusCode, log.IPAddress, log.PromptTokens, log.CompletionTokens, errMsg)
+	`,
+		log.RequestID,
+		log.APIKeyID,
+		log.Model,
+		log.LatencyMS,
+		log.StatusCode,
+		log.IPAddress,
+		log.PromptTokens,
+		log.CompletionTokens,
+		errMsg,
+	)
 
 	return err
+}
+
+// WriteAuditEvent inserts a privacy-conscious request outcome event.
+//
+// APIKeyID may be nil when the request did not provide a valid API key.
+// ErrorCode must be a short standardized code, never a raw error message.
+func WriteAuditEvent(db *sql.DB, event *AuditEvent) error {
+	if event == nil {
+		return fmt.Errorf("audit event cannot be nil")
+	}
+
+	if strings.TrimSpace(event.RequestID) == "" {
+		return fmt.Errorf("audit event request ID cannot be empty")
+	}
+
+	if !isSafeAuditValue(event.EventType, 64) {
+		return fmt.Errorf("invalid audit event type")
+	}
+
+	switch event.Outcome {
+	case "success", "failure", "cancelled":
+	default:
+		return fmt.Errorf("invalid audit event outcome %q", event.Outcome)
+	}
+
+	if event.StatusCode < 100 || event.StatusCode > 599 {
+		return fmt.Errorf("invalid audit event status code %d", event.StatusCode)
+	}
+
+	if event.ErrorCode != "" && !isSafeAuditValue(event.ErrorCode, 64) {
+		return fmt.Errorf("invalid audit error code")
+	}
+
+	_, err := db.Exec(`
+		INSERT INTO audit_events (
+			request_id,
+			event_type,
+			outcome,
+			status_code,
+			api_key_id,
+			error_code
+		)
+		VALUES (?, ?, ?, ?, ?, ?)
+	`,
+		event.RequestID,
+		event.EventType,
+		event.Outcome,
+		event.StatusCode,
+		event.APIKeyID,
+		nullableString(event.ErrorCode),
+	)
+
+	return err
+}
+
+// isSafeAuditValue restricts event and error codes to short identifiers.
+// This prevents accidentally storing free-form error messages in these fields.
+func isSafeAuditValue(value string, maxLength int) bool {
+	if value == "" || len(value) > maxLength {
+		return false
+	}
+
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') ||
+			(r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') ||
+			r == '_' || r == '-' {
+			continue
+		}
+
+		return false
+	}
+
+	return true
+}
+
+func nullableString(value string) sql.NullString {
+	if value == "" {
+		return sql.NullString{}
+	}
+
+	return sql.NullString{
+		String: value,
+		Valid:  true,
+	}
 }

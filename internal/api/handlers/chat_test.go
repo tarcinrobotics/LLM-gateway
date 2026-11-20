@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -127,6 +128,23 @@ func setupChatTestWithWorkerPool(
 	)
 }
 
+func sendChatRequest(handler http.Handler, body, requestID string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/v1/chat/completions",
+		strings.NewReader(body),
+	)
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+testAPIKey)
+	req.Header.Set("X-Request-ID", requestID)
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, req)
+
+	return recorder
+}
+
 func sendStreamingRequest(handler http.Handler) *httptest.ResponseRecorder {
 	body := `{
 		"model": "test-model",
@@ -136,19 +154,7 @@ func sendStreamingRequest(handler http.Handler) *httptest.ResponseRecorder {
 		]
 	}`
 
-	req := httptest.NewRequest(
-		http.MethodPost,
-		"/v1/chat/completions",
-		strings.NewReader(body),
-	)
-
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+testAPIKey)
-
-	recorder := httptest.NewRecorder()
-	handler.ServeHTTP(recorder, req)
-
-	return recorder
+	return sendChatRequest(handler, body, "chat-stream-test")
 }
 
 func TestChatStreamingSuccess(t *testing.T) {
@@ -457,5 +463,337 @@ func TestChatQueueTimeoutReturnsGatewayTimeout(t *testing.T) {
 	case <-firstDone:
 	case <-time.After(2 * time.Second):
 		t.Fatal("first handler did not finish after cancellation")
+	}
+}
+
+func setupChatAuditTest(
+	t *testing.T,
+	ollamaHandler http.HandlerFunc,
+	wp *queue.WorkerPool,
+	queueTimeout time.Duration,
+) (http.Handler, *sql.DB) {
+	t.Helper()
+
+	server := httptest.NewServer(ollamaHandler)
+	t.Cleanup(server.Close)
+
+	dbPath := filepath.Join(t.TempDir(), "audit_test.db")
+	db, err := database.InitDB(dbPath)
+	if err != nil {
+		t.Fatalf("failed to initialize test database: %v", err)
+	}
+
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("failed to close test database: %v", err)
+		}
+	})
+
+	if err := database.SeedData(db); err != nil {
+		t.Fatalf("failed to seed test database: %v", err)
+	}
+
+	if _, err := database.CreateAPIKey(db, testAPIKey, 1, 1, 100); err != nil {
+		t.Fatalf("failed to create test API key: %v", err)
+	}
+
+	client := ollama.NewClient(server.URL, time.Second)
+
+	handler := ChatHandler(
+		db,
+		wp,
+		client,
+		queueTimeout,
+		2*time.Second,
+	)
+
+	wrappedHandler := middleware.LoggingMiddleware(
+		middleware.AuthMiddleware(db)(handler),
+	)
+
+	return wrappedHandler, db
+}
+
+func assertChatAuditEvent(
+	t *testing.T,
+	db *sql.DB,
+	requestID string,
+	expectedEventType string,
+	expectedOutcome string,
+	expectedStatus int,
+	expectedErrorCode string,
+) {
+	t.Helper()
+
+	var (
+		eventType  string
+		outcome    string
+		statusCode int
+		errorCode  sql.NullString
+	)
+
+	err := db.QueryRow(`
+		SELECT event_type, outcome, status_code, error_code
+		FROM audit_events
+		WHERE request_id = ?
+	`, requestID).Scan(
+		&eventType,
+		&outcome,
+		&statusCode,
+		&errorCode,
+	)
+	if err != nil {
+		t.Fatalf("failed to retrieve audit event for %q: %v", requestID, err)
+	}
+
+	if eventType != expectedEventType {
+		t.Errorf("expected event type %q, got %q", expectedEventType, eventType)
+	}
+
+	if outcome != expectedOutcome {
+		t.Errorf("expected outcome %q, got %q", expectedOutcome, outcome)
+	}
+
+	if statusCode != expectedStatus {
+		t.Errorf("expected status %d, got %d", expectedStatus, statusCode)
+	}
+
+	actualErrorCode := ""
+	if errorCode.Valid {
+		actualErrorCode = errorCode.String
+	}
+
+	if actualErrorCode != expectedErrorCode {
+		t.Errorf("expected error code %q, got %q", expectedErrorCode, actualErrorCode)
+	}
+}
+
+func TestChatInvalidJSONIsAudited(t *testing.T) {
+	wp := queue.NewWorkerPool(1, 10)
+	wp.Start()
+	t.Cleanup(wp.Stop)
+
+	handler, db := setupChatAuditTest(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Error("Ollama should not be called for invalid JSON")
+	}, wp, time.Second)
+
+	requestID := "invalid-json-test"
+	recorder := sendChatRequest(handler, "{invalid-json", requestID)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected HTTP 400, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+
+	assertChatAuditEvent(
+		t, db, requestID,
+		"invalid_request", "failure",
+		http.StatusBadRequest, "invalid_request_body",
+	)
+}
+
+func TestChatMissingModelIsAudited(t *testing.T) {
+	wp := queue.NewWorkerPool(1, 10)
+	wp.Start()
+	t.Cleanup(wp.Stop)
+
+	handler, db := setupChatAuditTest(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Error("Ollama should not be called when model is missing")
+	}, wp, time.Second)
+
+	requestID := "missing-model-test"
+	body := `{"stream":false,"messages":[{"role":"user","content":"Hello"}]}`
+
+	recorder := sendChatRequest(handler, body, requestID)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected HTTP 400, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+
+	assertChatAuditEvent(
+		t, db, requestID,
+		"invalid_request", "failure",
+		http.StatusBadRequest, "missing_model",
+	)
+}
+
+func TestChatSuccessfulStreamingIsAudited(t *testing.T) {
+	wp := queue.NewWorkerPool(1, 10)
+	wp.Start()
+	t.Cleanup(wp.Stop)
+
+	handler, db := setupChatAuditTest(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		_, _ = w.Write([]byte(
+			`{"message":{"role":"assistant","content":"Hello"},"done":false}` + "\n" +
+				`{"message":{"role":"assistant","content":""},"done":true}` + "\n",
+		))
+	}, wp, time.Second)
+
+	requestID := "successful-stream-audit-test"
+	body := `{
+		"model":"test-model",
+		"stream":true,
+		"messages":[{"role":"user","content":"Private prompt content"}]
+	}`
+
+	recorder := sendChatRequest(handler, body, requestID)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected HTTP 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+
+	assertChatAuditEvent(
+		t, db, requestID,
+		"chat_succeeded", "success",
+		http.StatusOK, "",
+	)
+
+	// Verify that the audit event does not contain prompt content.
+	var eventData string
+	err := db.QueryRow(`
+		SELECT event_type || ' ' || outcome || ' ' || COALESCE(error_code, '')
+		FROM audit_events
+		WHERE request_id = ?
+	`, requestID).Scan(&eventData)
+	if err != nil {
+		t.Fatalf("failed to read audit event: %v", err)
+	}
+
+	if strings.Contains(eventData, "Private prompt content") {
+		t.Fatal("audit event must not contain prompt content")
+	}
+}
+
+func TestChatQueueFullIsAudited(t *testing.T) {
+	wp := queue.NewWorkerPool(1, 0)
+
+	handler, db := setupChatAuditTest(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Error("Ollama should not be called when the queue is full")
+	}, wp, time.Second)
+
+	requestID := "queue-full-audit-test"
+	body := `{
+		"model":"test-model",
+		"stream":false,
+		"messages":[{"role":"user","content":"Hello"}]
+	}`
+
+	recorder := sendChatRequest(handler, body, requestID)
+
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected HTTP 503, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+
+	assertChatAuditEvent(
+		t, db, requestID,
+		"queue_rejected", "failure",
+		http.StatusServiceUnavailable, "queue_full",
+	)
+}
+
+func TestChatPermissionDeniedIsAudited(t *testing.T) {
+	ollamaCalled := atomic.Bool{}
+
+	ollamaHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ollamaCalled.Store(true)
+		w.WriteHeader(http.StatusOK)
+	})
+
+	wp := queue.NewWorkerPool(1, 10)
+	wp.Start()
+	t.Cleanup(wp.Stop)
+
+	handler, db := setupChatAuditTest(t, ollamaHandler, wp, time.Second)
+
+	// Create a role with no model permissions.
+	result, err := db.Exec(
+		`INSERT INTO roles (name) VALUES (?)`,
+		"RestrictedTestRole",
+	)
+	if err != nil {
+		t.Fatalf("failed to create restricted role: %v", err)
+	}
+
+	roleID, err := result.LastInsertId()
+	if err != nil {
+		t.Fatalf("failed to get restricted role ID: %v", err)
+	}
+
+	// Assign the test API key to the restricted role.
+	_, err = db.Exec(
+		`UPDATE api_keys SET role_id = ? WHERE hash = ?`,
+		roleID,
+		database.HashKey(testAPIKey),
+	)
+	if err != nil {
+		t.Fatalf("failed to assign restricted role: %v", err)
+	}
+
+	body := `{"model":"forbidden-test-model","messages":[{"role":"user","content":"hello"}]}`
+
+	rr := sendChatRequest(handler, body, "permission-denied-test")
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("expected HTTP 403, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	if ollamaCalled.Load() {
+		t.Fatal("Ollama should not be called when permission is denied")
+	}
+
+	assertChatAuditEvent(
+		t,
+		db,
+		"permission-denied-test",
+		"permission_denied",
+		"failure",
+		http.StatusForbidden,
+		"model_not_permitted",
+	)
+}
+
+func TestChatAuditWriteFailureDoesNotChangeResponse(t *testing.T) {
+	wp := queue.NewWorkerPool(1, 10)
+	wp.Start()
+	t.Cleanup(wp.Stop)
+
+	handler, db := setupChatAuditTest(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Error("Ollama should not be called for invalid JSON")
+	}, wp, time.Second)
+
+	// Force audit inserts to fail while leaving the rest of the database usable.
+	_, err := db.Exec(`
+		CREATE TRIGGER reject_audit_insert
+		BEFORE INSERT ON audit_events
+		BEGIN
+			SELECT RAISE(FAIL, 'simulated audit write failure');
+		END;
+	`)
+	if err != nil {
+		t.Fatalf("failed to create audit failure trigger: %v", err)
+	}
+
+	requestID := "audit-write-failure-test"
+	recorder := sendChatRequest(handler, "{invalid-json", requestID)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf(
+			"expected HTTP 400 even when audit write fails, got %d: %s",
+			recorder.Code,
+			recorder.Body.String(),
+		)
+	}
+
+	var count int
+	err = db.QueryRow(
+		"SELECT COUNT(*) FROM audit_events WHERE request_id = ?",
+		requestID,
+	).Scan(&count)
+	if err != nil {
+		t.Fatalf("failed to query audit events: %v", err)
+	}
+
+	if count != 0 {
+		t.Fatalf("expected audit insert to fail, but found %d events", count)
 	}
 }

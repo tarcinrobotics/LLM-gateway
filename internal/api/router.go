@@ -32,18 +32,24 @@ func NewRouter(
 	// Initialize middleware config
 	rateLimiter := middleware.NewRateLimiter()
 	authMW := middleware.AuthMiddleware(db)
-	limitMW := middleware.RateLimitMiddleware(rateLimiter)
+	limitMW := middleware.RateLimitMiddleware(db, rateLimiter)
 
-	// helper to wrap secure routes
+	// Helper to wrap secure routes.
 	secureRoute := func(h http.Handler) http.Handler {
 		return authMW(limitMW(h))
 	}
 
 	// 2. Gateway Proxy / Consumer Endpoints (Secure)
-	mux.Handle("POST /api/v1/chat", secureRoute(handlers.ChatHandler(db, wp, ollamaClient, queueTimeout, inferenceTimeout)))
-	mux.Handle("GET /api/v1/models", secureRoute(handlers.ModelsHandler(discovery)))
+	mux.Handle(
+		"POST /api/v1/chat",
+		secureRoute(handlers.ChatHandler(db, wp, ollamaClient, queueTimeout, inferenceTimeout)),
+	)
+	mux.Handle(
+		"GET /api/v1/models",
+		secureRoute(handlers.ModelsHandler(discovery)),
+	)
 
-	// adminRoute helper
+	// Admin route helper.
 	adminRoute := func(h http.Handler) http.Handler {
 		return middleware.AdminBasicAuthMiddleware(h)
 	}
@@ -62,10 +68,11 @@ func NewRouter(
 	}
 	mux.Handle("/", http.FileServer(http.FS(distFS)))
 
-	// 5. Global Middleware Wrapper (Runs on all incoming requests)
+	// 5. Global Middleware Wrapper
 	var handler http.Handler = mux
-	handler = middleware.LoggingMiddleware(handler)
 	handler = middleware.RecoveryMiddleware(handler)
+	handler = middleware.LoggingMiddleware(handler)
 	handler = middleware.CORSMiddleware(allowedOrigins)(handler)
+
 	return handler
 }

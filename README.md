@@ -7,8 +7,55 @@ A high-performance, secure Go-based reverse proxy and gateway for Ollama LLMs. I
 - 🚀 **Asynchronous Queueing:** Uses FIFO worker pools to handle concurrent LLM requests without overwhelming the backend.
 - 🔒 **Security:** HTTP Basic Auth for admin routes, API Keys for consumers.
 - 🛑 **Rate Limiting:** In-memory Token Bucket per API Key.
-- 📜 **Audit Logging:** Logs all prompts, tokens, latencies, and metadata directly to an internal SQLite database.
+- 📜 **Audit Logging:** Records request outcomes, HTTP status codes, timestamps, request IDs, API key IDs, and safe error codes in SQLite without storing raw prompts, responses, API keys, or credentials.
 - 🎨 **Developer Portal:** Embedded React dashboard for managing API Keys and chatting directly with models.
+
+## Audit Logging
+
+The gateway maintains structured audit records in SQLite to track request outcomes and support security monitoring and troubleshooting.
+
+### Audit Events
+
+Audit events are stored separately in the `audit_events` table.
+
+Each event can contain:
+
+| Field         | Description                                                                           |
+| ------------- | ------------------------------------------------------------------------------------- |
+| `request_id`  | Unique identifier associated with the request.                                        |
+| `event_type`  | Type of event, such as authentication failure, permission denial, or queue rejection. |
+| `outcome`     | Request outcome: `success`, `failure`, or `cancelled`.                                |
+| `status_code` | HTTP status code associated with the event.                                           |
+| `api_key_id`  | API key identifier, when available.                                                   |
+| `error_code`  | Safe error classification, when applicable.                                           |
+| `created_at`  | Timestamp when the event was recorded.                                                |
+
+### Audited Request Outcomes
+
+The gateway records relevant events across the request lifecycle, including:
+
+- Successful chat requests.
+- Invalid request payloads and missing model information.
+- Authentication failures, including missing, invalid, inactive, or expired API keys.
+- Permission-check failures and model access denials.
+- Rate-limit violations.
+- Queue rejections, queue timeouts, and worker shutdown failures.
+- Upstream inference errors and inference timeouts.
+- Streaming failures and incomplete streams.
+- Client cancellations.
+
+### Privacy and Data Protection
+
+- Raw prompts and model responses are not stored in `audit_events`.
+- API keys and authentication credentials are never stored in audit records.
+- Safe error codes are used instead of raw upstream error messages.
+- Audit database write failures do not replace or change the original request outcome.
+
+### Legacy Request Logs
+
+The existing `request_logs` table is preserved for compatibility with existing functionality. It stores legacy request metadata, such as model information, client IP, token counts, and latency.
+
+The separate `audit_events` table adds structured security and request-outcome tracking without changing the legacy table schema.
 
 ## Getting Started
 
