@@ -60,7 +60,7 @@ func NewRouter(
 	mux.Handle("POST /admin/keys", adminRoute(handlers.CreateAPIKeyHandler(db)))
 	mux.Handle("DELETE /admin/keys/{id}", adminRoute(handlers.DeleteAPIKeyHandler(db)))
 	mux.Handle("GET /admin/logs", adminRoute(handlers.RequestLogsHandler(db)))
-
+	mux.Handle("GET /admin/audit-events", adminRoute(handlers.AuditEventsHandler(db)))
 	// 4. Embedded React Frontend
 	distFS, err := fs.Sub(ui.FS, "dist")
 	if err != nil {

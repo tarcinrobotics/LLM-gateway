@@ -4,15 +4,15 @@ import (
 	"database/sql"
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"llm_gateway/internal/database"
 	"llm_gateway/internal/metrics"
 	"llm_gateway/internal/queue"
 )
-
-
 
 // AdminMetricsHandler exposes runtime server metrics.
 func AdminMetricsHandler(db *sql.DB, wp *queue.WorkerPool) http.HandlerFunc {
@@ -228,4 +228,200 @@ func DeleteAPIKeyHandler(db *sql.DB) http.HandlerFunc {
 		w.WriteHeader(http.StatusOK)
 		json.NewEncoder(w).Encode(map[string]string{"message": "API key deleted successfully"})
 	}
+}
+
+// AuditEventsHandler returns privacy-safe audit metadata with bounded pagination.
+func AuditEventsHandler(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+
+		// Pagination defaults.
+		page := 1
+		limit := 50
+		var err error
+
+		// Validate page.
+		if values, exists := q["page"]; exists {
+			if len(values) != 1 || values[0] == "" {
+				writeAuditError(w, http.StatusBadRequest, "Invalid page")
+				return
+			}
+
+			page, err = strconv.Atoi(values[0])
+			if err != nil || page < 1 || page > 1000000 {
+				writeAuditError(w, http.StatusBadRequest, "page must be between 1 and 1000000")
+				return
+			}
+		}
+
+		// Validate limit.
+		if values, exists := q["limit"]; exists {
+			if len(values) != 1 || values[0] == "" {
+				writeAuditError(w, http.StatusBadRequest, "Invalid limit")
+				return
+			}
+
+			limit, err = strconv.Atoi(values[0])
+			if err != nil || limit < 1 || limit > 100 {
+				writeAuditError(w, http.StatusBadRequest, "limit must be between 1 and 100")
+				return
+			}
+		}
+
+		// Validate exact-match filters.
+		eventType, ok := getAuditFilter(q, "event_type")
+		if !ok || (eventType != "" && !isValidAuditFilter(eventType, 64)) {
+			writeAuditError(w, http.StatusBadRequest, "Invalid event_type")
+			return
+		}
+
+		outcome, ok := getAuditFilter(q, "outcome")
+		if !ok || (outcome != "" &&
+			outcome != "success" &&
+			outcome != "failure" &&
+			outcome != "cancelled") {
+			writeAuditError(w, http.StatusBadRequest, "Invalid outcome")
+			return
+		}
+
+		requestID, ok := getAuditFilter(q, "request_id")
+		if !ok || len(requestID) > 128 ||
+			strings.ContainsAny(requestID, "\r\n\x00") {
+			writeAuditError(w, http.StatusBadRequest, "Invalid request_id")
+			return
+		}
+
+		// Build a parameterized query.
+		query := `
+			SELECT id, request_id, event_type, outcome,
+			       status_code, api_key_id, error_code, created_at
+			FROM audit_events
+			WHERE 1 = 1
+		`
+
+		args := make([]interface{}, 0, 5)
+
+		if eventType != "" {
+			query += " AND event_type = ?"
+			args = append(args, eventType)
+		}
+
+		if outcome != "" {
+			query += " AND outcome = ?"
+			args = append(args, outcome)
+		}
+
+		if requestID != "" {
+			query += " AND request_id = ?"
+			args = append(args, requestID)
+		}
+
+		offset := (page - 1) * limit
+
+		// ID provides deterministic ordering for identical timestamps.
+		query += `
+			ORDER BY created_at DESC, id DESC
+			LIMIT ? OFFSET ?
+		`
+
+		args = append(args, limit, offset)
+
+		rows, err := db.Query(query, args...)
+		if err != nil {
+			writeAuditError(w, http.StatusInternalServerError,
+				"Unable to retrieve audit events")
+			return
+		}
+		defer rows.Close()
+
+		events := make([]database.AuditEvent, 0)
+
+		for rows.Next() {
+			var event database.AuditEvent
+			var apiKeyID sql.NullInt64
+			var errorCode sql.NullString
+
+			err := rows.Scan(
+				&event.ID,
+				&event.RequestID,
+				&event.EventType,
+				&event.Outcome,
+				&event.StatusCode,
+				&apiKeyID,
+				&errorCode,
+				&event.CreatedAt,
+			)
+
+			if err != nil {
+				writeAuditError(w, http.StatusInternalServerError,
+					"Unable to retrieve audit events")
+				return
+			}
+
+			if apiKeyID.Valid {
+				id := apiKeyID.Int64
+				event.APIKeyID = &id
+			}
+
+			if errorCode.Valid {
+				event.ErrorCode = errorCode.String
+			}
+
+			events = append(events, event)
+		}
+
+		if err := rows.Err(); err != nil {
+			writeAuditError(w, http.StatusInternalServerError,
+				"Unable to retrieve audit events")
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(events)
+	}
+}
+
+// Gets a single filter value and rejects repeated or empty parameters.
+func getAuditFilter(q url.Values, key string) (string, bool) {
+	values, exists := q[key]
+
+	if !exists {
+		return "", true
+	}
+
+	if len(values) != 1 || values[0] == "" {
+		return "", false
+	}
+
+	return values[0], true
+}
+
+// Allows only safe identifier characters for event_type.
+func isValidAuditFilter(value string, maxLength int) bool {
+	if len(value) == 0 || len(value) > maxLength {
+		return false
+	}
+
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') ||
+			(r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') ||
+			r == '_' || r == '-' {
+			continue
+		}
+
+		return false
+	}
+
+	return true
+}
+
+// Returns a generic JSON error without exposing database details.
+func writeAuditError(w http.ResponseWriter, status int, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(map[string]string{
+		"error": message,
+	})
 }

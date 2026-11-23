@@ -203,3 +203,102 @@ Revokes and permanently deletes an API key.
 ### `GET /admin/logs`
 
 Retrieves a list of the 50 most recent request logs, detailing the status codes, latencies, IP addresses, and consumed tokens.
+
+### `GET /admin/audit-events`
+
+Retrieves privacy-safe audit event records.
+
+- **Authentication:** HTTP Basic Auth
+- **Credentials:** `ADMIN_USER` and `ADMIN_PASS`
+- **Method:** GET
+- **Access:** Administrators only
+
+#### Query parameters
+
+| Parameter  | Default | Description                   |
+| ---------- | ------: | ----------------------------- |
+| page       |       1 | Page number (1–1,000,000)     |
+| limit      |      50 | Results per page (1–100)      |
+| event_type |    None | Exact event type filter       |
+| outcome    |    None | success, failure or cancelled |
+| request_id |    None | Exact request ID filter       |
+
+#### Example request
+
+```bash
+curl -u "$ADMIN_USER:$ADMIN_PASS" \
+"http://localhost:8080/admin/audit-events?page=1&limit=25&outcome=failure"
+```
+
+#### Example response
+
+```json
+[
+  {
+    "id": 42,
+    "request_id": "req-abc123",
+    "event_type": "inference_failed",
+    "outcome": "failure",
+    "status_code": 502,
+    "api_key_id": 7,
+    "error_code": "upstream_unavailable",
+    "created_at": "2026-11-23T04:30:00Z"
+  }
+]
+```
+
+#### Pagination
+
+- The default page size is 50.
+- The maximum page size is 100.
+- Results are ordered by created_at DESC, id DESC.
+- To retrieve the next page, increment the page parameter while keeping the same limit and filters.
+
+Example:
+
+```text
+GET /admin/audit-events?page=1&limit=25
+GET /admin/audit-events?page=2&limit=25
+GET /admin/audit-events?page=3&limit=25
+```
+
+Pagination uses offset-based queries, not a snapshot.
+If new events are inserted between page requests, records can
+shift between pages, potentially causing duplicates or omissions.
+
+#### Error responses
+
+| Status | Description                          |
+| ------ | ------------------------------------ |
+| 200    | Successful retrieval                 |
+| 400    | Invalid query parameter              |
+| 401    | Missing or invalid admin credentials |
+| 500    | Database error                       |
+
+No matching records return an empty JSON array:
+
+```json
+[]
+```
+
+#### Privacy and limitations
+
+The endpoint returns only these existing audit metadata fields:
+
+- id
+- request_id
+- event_type
+- outcome
+- status_code
+- api_key_id
+- error_code
+- created_at
+
+Raw prompts, model responses, credentials, API keys and
+raw error messages are never returned.
+
+Audit events are best-effort records. If an audit database
+write fails, the corresponding event may be missing.
+Therefore, audit events do not guarantee complete audit coverage.
+
+The existing `/admin/logs` endpoint remains unchanged.
