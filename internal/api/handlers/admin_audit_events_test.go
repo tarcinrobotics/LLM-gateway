@@ -184,6 +184,8 @@ func TestAuditEventsInvalidParameters(t *testing.T) {
 		"?event_type=chat%20OR%201%3D1",
 		"?request_id=a%0Ab",
 		"?limit=1&limit=2",
+		"?request_id=bad%20id",
+		"?request_id=" + strings.Repeat("x", 129),
 	}
 
 	for _, query := range tests {
@@ -437,5 +439,77 @@ func TestAuditEventsMaximumLimit(t *testing.T) {
 
 	if len(events) != 100 {
 		t.Fatalf("expected 100 events, got %d", len(events))
+	}
+}
+
+func TestAuditEventsRequestIDFilterAcceptsGeneratedID(t *testing.T) {
+	db := createAuditTestDB(t)
+
+	requestID := middleware.GenerateRequestID()
+
+	if !middleware.IsValidRequestID(requestID) {
+		t.Fatalf("generated request ID does not follow policy: %q", requestID)
+	}
+
+	insertTestAudit(
+		t,
+		db,
+		requestID,
+		"chat",
+		"success",
+		"2026-01-01 10:00:00",
+	)
+
+	rec := callAuditHandler(
+		AuditEventsHandler(db),
+		"/admin/audit-events?request_id="+requestID,
+	)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", rec.Code)
+	}
+
+	var events []database.AuditEvent
+
+	if err := json.Unmarshal(rec.Body.Bytes(), &events); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(events) != 1 || events[0].RequestID != requestID {
+		t.Fatalf("unexpected events: %#v", events)
+	}
+}
+
+func TestAuditEventsRequestIDFilterAcceptsMaximumLength(t *testing.T) {
+	db := createAuditTestDB(t)
+
+	requestID := strings.Repeat("a", 128)
+
+	insertTestAudit(
+		t,
+		db,
+		requestID,
+		"chat",
+		"success",
+		"2026-01-01 10:00:00",
+	)
+
+	rec := callAuditHandler(
+		AuditEventsHandler(db),
+		"/admin/audit-events?request_id="+requestID,
+	)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", rec.Code)
+	}
+
+	var events []database.AuditEvent
+
+	if err := json.Unmarshal(rec.Body.Bytes(), &events); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(events) != 1 || events[0].RequestID != requestID {
+		t.Fatalf("unexpected events: %#v", events)
 	}
 }

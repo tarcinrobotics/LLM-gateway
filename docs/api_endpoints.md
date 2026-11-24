@@ -215,13 +215,25 @@ Retrieves privacy-safe audit event records.
 
 #### Query parameters
 
-| Parameter  | Default | Description                   |
-| ---------- | ------: | ----------------------------- |
-| page       |       1 | Page number (1–1,000,000)     |
-| limit      |      50 | Results per page (1–100)      |
-| event_type |    None | Exact event type filter       |
-| outcome    |    None | success, failure or cancelled |
-| request_id |    None | Exact request ID filter       |
+| Parameter  | Default | Description                                                                  |
+| ---------- | ------: | ---------------------------------------------------------------------------- |
+| page       |       1 | Page number (1–1,000,000)                                                    |
+| limit      |      50 | Results per page (1–100)                                                     |
+| event_type |    None | Exact event type filter                                                      |
+| outcome    |    None | success, failure or cancelled                                                |
+| request_id |    None | Exact request ID filter; 1–128 ASCII letters, digits, hyphens or underscores |
+
+Request IDs are accepted from `X-Request-ID` only when exactly one value matches
+the documented format. Missing, malformed, repeated and oversized values are
+replaced with a server-generated ID.
+
+The selected ID is returned in the response `X-Request-ID` header and reused
+in request logs and audit events.
+
+Clients must not include secrets or personal information in request IDs.
+Syntax validation cannot detect sensitive data that resembles a valid identifier.
+
+See the [Request ID Policy](security.md#request-id-policy) for details.
 
 #### Example request
 

@@ -86,8 +86,10 @@ func TestCORSAllowedPreflight(t *testing.T) {
 	req := httptest.NewRequest(http.MethodOptions, "/chat", nil)
 	req.Header.Set("Origin", testOrigin)
 	req.Header.Set("Access-Control-Request-Method", "POST")
-	req.Header.Set("Access-Control-Request-Headers", "Authorization, Content-Type, X-API-Key")
-
+	req.Header.Set(
+		"Access-Control-Request-Headers",
+		"Authorization, Content-Type, X-API-Key, X-Request-ID",
+	)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -105,6 +107,13 @@ func TestCORSAllowedPreflight(t *testing.T) {
 
 	if rec.Header().Get("Access-Control-Allow-Headers") == "" {
 		t.Error("expected allowed headers header")
+	}
+
+	if !strings.Contains(
+		rec.Header().Get("Access-Control-Allow-Headers"),
+		"X-Request-ID",
+	) {
+		t.Error("expected X-Request-ID to be an allowed request header")
 	}
 }
 
@@ -244,4 +253,26 @@ func TestCORSDoesNotBypassAPIKeyAuthentication(t *testing.T) {
 			t.Errorf("expected 200 OK, got %d", rec.Code)
 		}
 	})
+}
+
+func TestCORSExposesRequestIDResponseHeader(t *testing.T) {
+	handler := CORSMiddleware([]string{testOrigin})(
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("X-Request-ID", "request-123")
+			w.WriteHeader(http.StatusOK)
+		}),
+	)
+
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	req.Header.Set("Origin", testOrigin)
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if got := rec.Header().Get("Access-Control-Expose-Headers"); !strings.Contains(got, "X-Request-ID") {
+		t.Fatalf(
+			"expected X-Request-ID to be exposed to browser clients, got %q",
+			got,
+		)
+	}
 }

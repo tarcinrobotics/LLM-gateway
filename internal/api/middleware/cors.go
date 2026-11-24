@@ -15,6 +15,7 @@ var allowedHeaders = map[string]bool{
 	"authorization": true,
 	"content-type":  true,
 	"x-api-key":     true,
+	"x-request-id":  true,
 }
 
 // CORSMiddleware configures CORS for explicitly trusted browser origins.
@@ -94,7 +95,7 @@ func CORSMiddleware(origins []string) func(http.Handler) http.Handler {
 				)
 				w.Header().Set(
 					"Access-Control-Allow-Headers",
-					"Authorization, Content-Type, X-API-Key",
+					"Authorization, Content-Type, X-API-Key, X-Request-ID",
 				)
 
 				w.WriteHeader(http.StatusNoContent)
@@ -104,12 +105,16 @@ func CORSMiddleware(origins []string) func(http.Handler) http.Handler {
 			// Add CORS permissions to allowed actual requests.
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set(
+				"Access-Control-Expose-Headers",
+				"X-Request-ID",
+			)
+			w.Header().Set(
 				"Access-Control-Allow-Methods",
 				"GET, POST, DELETE",
 			)
 			w.Header().Set(
 				"Access-Control-Allow-Headers",
-				"Authorization, Content-Type, X-API-Key",
+				"Authorization, Content-Type, X-API-Key, X-Request-ID",
 			)
 
 			next.ServeHTTP(w, r)

@@ -71,8 +71,8 @@ func NewRouter(
 	// 5. Global Middleware Wrapper
 	var handler http.Handler = mux
 	handler = middleware.RecoveryMiddleware(handler)
-	handler = middleware.LoggingMiddleware(handler)
 	handler = middleware.CORSMiddleware(allowedOrigins)(handler)
+	handler = middleware.LoggingMiddleware(handler)
 
 	return handler
 }

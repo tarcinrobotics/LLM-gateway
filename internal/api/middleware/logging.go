@@ -4,16 +4,45 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	"llm_gateway/internal/database"
 )
 
-const ModelContextKey contextKey = "model"
+const (
+	ModelContextKey    contextKey = "model"
+	RequestIDHeader               = "X-Request-ID"
+	MaxRequestIDLength            = 128
+)
 
-// GetModel retrieves the requested model name from the context.
+var fallbackRequestIDCounter atomic.Uint64
+
+// IsValidRequestID checks whether an ID follows the allowed format.
+// Allowed: ASCII letters, digits, hyphens and underscores.
+// Maximum length: 128 characters.
+func IsValidRequestID(id string) bool {
+	if len(id) == 0 || len(id) > MaxRequestIDLength {
+		return false
+	}
+
+	for i := 0; i < len(id); i++ {
+		c := id[i]
+		if !((c >= 'a' && c <= 'z') ||
+			(c >= 'A' && c <= 'Z') ||
+			(c >= '0' && c <= '9') ||
+			c == '-' || c == '_') {
+			return false
+		}
+	}
+
+	return true
+}
+
+// GetModel retrieves the requested model name from context.
 func GetModel(ctx context.Context) string {
 	if val := ctx.Value(ModelContextKey); val != nil {
 		if model, ok := val.(string); ok {
@@ -23,7 +52,7 @@ func GetModel(ctx context.Context) string {
 	return "unknown"
 }
 
-// SetModel sets the requested model name in the context.
+// SetModel sets the requested model name in context.
 func SetModel(ctx context.Context, model string) context.Context {
 	return context.WithValue(ctx, ModelContextKey, model)
 }
@@ -31,86 +60,110 @@ func SetModel(ctx context.Context, model string) context.Context {
 // GenerateRequestID creates a unique request ID.
 func GenerateRequestID() string {
 	b := make([]byte, 12)
+
 	if _, err := rand.Read(b); err != nil {
-		// Fallback to timestamp if random fails
-		return hex.EncodeToString([]byte(time.Now().Format("20060102150405")))
+		// Keep the fallback unique across concurrent calls.
+		counter := fallbackRequestIDCounter.Add(1)
+		return fmt.Sprintf(
+			"fallback-%x-%x",
+			time.Now().UnixNano(),
+			counter,
+		)
 	}
+
 	return hex.EncodeToString(b)
 }
 
-// ResponseWriterWrapper wraps http.ResponseWriter to capture status code and bytes written.
+// ResponseWriterWrapper captures status code and bytes written.
 type ResponseWriterWrapper struct {
 	http.ResponseWriter
-	StatusCode int
-	Written    int64
-	APIKey     interface{} // holds *database.APIKey
-	Model      string
+	StatusCode    int
+	Written       int64
+	APIKey        interface{}
+	Model         string
+	headerWritten bool
 }
 
-// WriteHeader captures the status code.
 func (rw *ResponseWriterWrapper) WriteHeader(code int) {
+	if rw.headerWritten {
+		return
+	}
+
+	rw.headerWritten = true
 	rw.StatusCode = code
 	rw.ResponseWriter.WriteHeader(code)
 }
 
-// Write captures the number of bytes written.
 func (rw *ResponseWriterWrapper) Write(b []byte) (int, error) {
-	if rw.StatusCode == 0 {
+	if !rw.headerWritten {
+		rw.headerWritten = true
 		rw.StatusCode = http.StatusOK
 	}
+
 	n, err := rw.ResponseWriter.Write(b)
 	rw.Written += int64(n)
 	return n, err
 }
 
-// Flush implements http.Flusher to support streaming (SSE).
+// Flush supports streaming responses (SSE).
 func (rw *ResponseWriterWrapper) Flush() {
+	if !rw.headerWritten {
+		rw.headerWritten = true
+		rw.StatusCode = http.StatusOK
+	}
+
 	if flusher, ok := rw.ResponseWriter.(http.Flusher); ok {
 		flusher.Flush()
 	}
 }
 
-// LoggingMiddleware logs each request with structured data.
+// LoggingMiddleware validates or generates a request ID before
+// passing the request to downstream middleware and handlers.
 func LoggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		startTime := time.Now()
 
-		// Generate or extract request ID
-		reqID := r.Header.Get("X-Request-ID")
-		if reqID == "" {
+		// Accept exactly one safe client-provided value.
+		// Rejected values are never propagated.
+		values := r.Header.Values(RequestIDHeader)
+
+		var reqID string
+
+		if len(values) == 1 && IsValidRequestID(values[0]) {
+			reqID = values[0]
+		} else {
 			reqID = GenerateRequestID()
 		}
 
-		// Set header on response
-		w.Header().Set("X-Request-ID", reqID)
+		// Return the selected ID to the client.
+		w.Header().Set(RequestIDHeader, reqID)
 
-		// Get client IP address
 		ip := r.Header.Get("X-Forwarded-For")
 		if ip == "" {
 			ip = r.RemoteAddr
 		}
 
-		// Inject request ID into context
-		ctx := context.WithValue(r.Context(), RequestIDContextKey, reqID)
+		// Store the same selected ID in request context.
+		ctx := context.WithValue(
+			r.Context(),
+			RequestIDContextKey,
+			reqID,
+		)
 		r = r.WithContext(ctx)
 
-		// Wrap ResponseWriter
 		wrapped := &ResponseWriterWrapper{
 			ResponseWriter: w,
-			StatusCode:     http.StatusOK, // Default to 200
+			StatusCode:     http.StatusOK,
 			Model:          "unknown",
 		}
 
-		// Serve the request
 		next.ServeHTTP(wrapped, r)
 
-		// Calculate latency
 		latency := time.Since(startTime)
 
-		// Retrieve API key ID
-		var apiKeyID int64 = 0
-		var keyPrefix string = "anonymous"
-		
+		var apiKeyID int64
+		keyPrefix := "anonymous"
+
 		if wrapped.APIKey != nil {
 			if apiKey, ok := wrapped.APIKey.(*database.APIKey); ok {
 				apiKeyID = apiKey.ID
@@ -118,7 +171,7 @@ func LoggingMiddleware(next http.Handler) http.Handler {
 			}
 		}
 
-		// Log structured message
+		// Log only the validated or generated request ID.
 		slog.Info("HTTP Request",
 			slog.String("request_id", reqID),
 			slog.String("ip", ip),
@@ -133,4 +186,3 @@ func LoggingMiddleware(next http.Handler) http.Handler {
 		)
 	})
 }
-

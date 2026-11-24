@@ -16,6 +16,48 @@ ADMIN_PASS=your_strong_password_here
 
 > **Security Note:** Do not commit your `.env` file to version control. It is already excluded in our `.gitignore`. The dashboard securely converts these credentials into a base64 encoded Basic Auth header to manage your gateway.
 
+## Request ID Policy
+
+The gateway accepts an optional `X-Request-ID` header for request correlation.
+
+The request boundary accepts exactly one value containing 1–128 ASCII characters
+from this set: `A-Z`, `a-z`, `0-9`, hyphen (`-`) and underscore (`_`).
+
+- A single valid value is preserved.
+- A missing, empty, malformed, oversized or repeated header is replaced with a
+  cryptographically generated server-side ID.
+- The selected ID is used in the response `X-Request-ID` header, request context,
+  structured application logs and audit events.
+- Rejected input is not propagated as the request ID.
+- The admin audit-event `request_id` filter uses the same format and length rules.
+- Historical audit rows containing IDs outside this format remain stored but
+  cannot be queried through this exact-match filter.
+
+Clients must never place credentials, tokens, personal information or other
+sensitive data in request IDs.
+
+Format validation only checks syntax and length. It cannot identify a secret
+or personal datum that happens to look like a valid identifier.
+
+Deployments requiring stronger confidentiality should generate IDs server-side
+and disregard client-provided values entirely.
+
+### Audit metadata review
+
+| Metadata                               | Source                              | Current handling                                                       | Follow-up                                                             |
+| -------------------------------------- | ----------------------------------- | ---------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| `request_id`                           | Client header or server generator   | Validated and bounded at request boundary                              | Keep filter validation aligned                                        |
+| `event_type`, `outcome`, `status_code` | Gateway code paths                  | Selected by code; outcome has database constraint; status is integer   | Use fixed internal values                                             |
+| `api_key_id`                           | Authenticated API-key record        | Internal database identifier, not raw key                              | No change proposed                                                    |
+| `error_code`                           | Gateway error handling              | Fixed error codes; raw upstream errors and credentials are not written | Continue using safe codes                                             |
+| Legacy request-log `model`             | Client chat request                 | Stored as requested model name                                         | Consider a bounded model-name policy separately                       |
+| Legacy request-log `ip_address`        | `X-Forwarded-For` or remote address | Forwarding header is currently trusted when present                    | Configure trusted proxies and validate forwarded addresses separately |
+| `created_at`                           | Database                            | Database-generated timestamp                                           | No change proposed                                                    |
+
+The legacy request-log fields are outside this request-ID change.
+Unrelated metadata should be reviewed with the maintainer before
+modifying its behavior.
+
 ## Database & API Keys
 
 - Consumer endpoints (`/api/v1/chat` and `/api/v1/models`) DO NOT use `.env` credentials. Instead, they require **API Keys**.
@@ -103,6 +145,10 @@ cors:
 ```
 
 An empty list is the default and grants no cross-origin browser access.
+
+- `X-Request-ID`
+
+The `X-Request-ID` response header is exposed to allowed browser origins.
 
 ### Local Development
 

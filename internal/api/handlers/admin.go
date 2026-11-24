@@ -6,9 +6,9 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
-	"strings"
 	"time"
 
+	"llm_gateway/internal/api/middleware"
 	"llm_gateway/internal/database"
 	"llm_gateway/internal/metrics"
 	"llm_gateway/internal/queue"
@@ -285,8 +285,7 @@ func AuditEventsHandler(db *sql.DB) http.HandlerFunc {
 		}
 
 		requestID, ok := getAuditFilter(q, "request_id")
-		if !ok || len(requestID) > 128 ||
-			strings.ContainsAny(requestID, "\r\n\x00") {
+		if !ok || (requestID != "" && !middleware.IsValidRequestID(requestID)) {
 			writeAuditError(w, http.StatusBadRequest, "Invalid request_id")
 			return
 		}
