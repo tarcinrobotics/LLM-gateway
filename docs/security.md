@@ -195,3 +195,31 @@ CORS is not an authentication mechanism.
 - Admin endpoints still require HTTP Basic Authentication.
 - Allowing a frontend origin does not grant access to protected endpoints.
 - Requests without an `Origin` header continue through the application normally.
+
+## Request body limits
+
+Incoming JSON bodies are bounded before decoding to prevent
+unbounded request body reads:
+
+- `POST /api/v1/chat`: 1 MiB (1,048,576 bytes).
+- `POST /admin/keys`: 16 KiB (16,384 bytes).
+
+Bodies larger than the endpoint limit receive
+`413 Payload Too Large` with a clear JSON error.
+
+Requests exactly at the limit are accepted.
+
+The limits also apply when `Content-Length` is absent.
+
+Malformed JSON that is within the limit continues to receive
+`400 Bad Request`.
+
+The chat limit applies to the incoming request only, not the
+outgoing streaming response.
+
+The limits are compile-time documented constants and are not
+configurable at runtime.
+
+Clients with chat prompts or conversation histories above 1 MiB
+must trim or split those requests. API-key creation clients should
+send only the small JSON fields required by the endpoint.

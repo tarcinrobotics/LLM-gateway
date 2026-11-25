@@ -44,11 +44,20 @@ func ChatHandler(
 
 		apiKeyID := apiKey.ID
 
-		// Decode the request body.
+		// Decode the request body with a maximum size.
 		var chatReq ollama.ChatRequest
-		if err := json.NewDecoder(r.Body).Decode(&chatReq); err != nil {
+
+		if err := decodeLimitedJSON(r, ChatRequestBodyLimit, &chatReq); err != nil {
+			if errors.Is(err, errRequestBodyTooLarge) {
+				writeChatAudit(db, reqID, "invalid_request", "failure",
+					http.StatusRequestEntityTooLarge, &apiKeyID, "request_body_too_large")
+				respondPayloadTooLarge(w)
+				return
+			}
+
 			writeChatAudit(db, reqID, "invalid_request", "failure",
 				http.StatusBadRequest, &apiKeyID, "invalid_request_body")
+
 			respondJSONError(w, http.StatusBadRequest, "Invalid request body: "+err.Error())
 			return
 		}

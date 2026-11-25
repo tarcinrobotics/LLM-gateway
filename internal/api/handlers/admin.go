@@ -3,6 +3,7 @@ package handlers
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -91,10 +92,19 @@ func CreateAPIKeyHandler(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 
 		var payload CreateKeyPayload
-		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+
+		if err := decodeLimitedJSON(r, CreateAPIKeyRequestBodyLimit, &payload); err != nil {
+			if errors.Is(err, errRequestBodyTooLarge) {
+				respondPayloadTooLarge(w)
+				return
+			}
+
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]string{"error": "Invalid request payload"})
+
+			json.NewEncoder(w).Encode(
+				map[string]string{"error": "Invalid request payload"},
+			)
 			return
 		}
 

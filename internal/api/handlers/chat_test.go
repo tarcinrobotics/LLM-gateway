@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -795,5 +796,162 @@ func TestChatAuditWriteFailureDoesNotChangeResponse(t *testing.T) {
 
 	if count != 0 {
 		t.Fatalf("expected audit insert to fail, but found %d events", count)
+	}
+}
+
+func TestInvalidRequestIDIsReplacedAcrossResponseLogAndAudit(t *testing.T) {
+	var logOutput strings.Builder
+
+	previousLogger := slog.Default()
+	slog.SetDefault(
+		slog.New(slog.NewTextHandler(&logOutput, nil)),
+	)
+
+	t.Cleanup(func() {
+		slog.SetDefault(previousLogger)
+	})
+
+	wp := queue.NewWorkerPool(1, 2)
+	wp.Start()
+	t.Cleanup(wp.Stop)
+
+	handler, db := setupChatAuditTest(
+		t,
+		func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(
+				`{"message":{"role":"assistant","content":"ok"},"done":true}`,
+			))
+		},
+		wp,
+		time.Second,
+	)
+
+	const rejectedID = "invalid request id SYNTHETIC_REJECTED_MARKER"
+
+	body := `{"model":"test-model","messages":[{"role":"user","content":"hello"}]}`
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/chat",
+		strings.NewReader(body),
+	)
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+testAPIKey)
+	req.Header.Set("X-Request-ID", rejectedID)
+
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, req)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf(
+			"expected HTTP 200, got %d: %s",
+			response.Code,
+			response.Body.String(),
+		)
+	}
+
+	// Verify the response contains a newly generated valid ID.
+	selectedID := response.Header().Get("X-Request-ID")
+
+	if !middleware.IsValidRequestID(selectedID) ||
+		selectedID == rejectedID {
+		t.Fatalf(
+			"expected a generated valid request ID, got %q",
+			selectedID,
+		)
+	}
+
+	if strings.Contains(response.Body.String(), rejectedID) {
+		t.Fatal("rejected request ID leaked into response body")
+	}
+
+	// Verify the audit event uses the same generated ID.
+	var auditID string
+
+	if err := db.QueryRow(
+		`SELECT request_id FROM audit_events ORDER BY id DESC LIMIT 1`,
+	).Scan(&auditID); err != nil {
+		t.Fatalf("read audit event: %v", err)
+	}
+
+	if auditID != selectedID {
+		t.Fatalf(
+			"audit request ID %q does not match response ID %q",
+			auditID,
+			selectedID,
+		)
+	}
+
+	// Verify the application log uses the generated ID.
+	logs := logOutput.String()
+
+	if !strings.Contains(logs, "request_id="+selectedID) {
+		t.Fatalf(
+			"application log does not contain selected request ID %q: %s",
+			selectedID,
+			logs,
+		)
+	}
+
+	if strings.Contains(logs, rejectedID) ||
+		strings.Contains(auditID, rejectedID) {
+		t.Fatal(
+			"rejected request ID leaked into application log or audit event",
+		)
+	}
+}
+
+func TestChatRequestBodyLimit(t *testing.T) {
+	handler := setupChatTest(
+		t,
+		func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(
+				`{"message":{"role":"assistant","content":"ok"},"done":true}`,
+			))
+		},
+	)
+
+	base := `{"model":"test-model","messages":[{"role":"user","content":"hello"}]}`
+
+	exact := base + strings.Repeat(
+		" ",
+		int(ChatRequestBodyLimit)-len(base),
+	)
+
+	request := func(body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(
+			http.MethodPost,
+			"/api/v1/chat",
+			strings.NewReader(body),
+		)
+
+		req.ContentLength = -1
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+testAPIKey)
+		req.Header.Set("X-Request-ID", "chat-body-limit-test")
+
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, req)
+
+		return recorder
+	}
+
+	if got := request(exact); got.Code != http.StatusOK {
+		t.Fatalf(
+			"exact-limit chat body should succeed, got %d: %s",
+			got.Code,
+			got.Body.String(),
+		)
+	}
+
+	if got := request(exact + " "); got.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf(
+			"over-limit chat body should return 413, got %d: %s",
+			got.Code,
+			got.Body.String(),
+		)
 	}
 }

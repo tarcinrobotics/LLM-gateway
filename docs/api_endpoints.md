@@ -314,3 +314,32 @@ write fails, the corresponding event may be missing.
 Therefore, audit events do not guarantee complete audit coverage.
 
 The existing `/admin/logs` endpoint remains unchanged.
+
+### Request body limits
+
+The gateway enforces limits on the incoming JSON request body (bytes):
+
+| Endpoint            |            Maximum body |
+| ------------------- | ----------------------: |
+| `POST /api/v1/chat` | 1 MiB (1,048,576 bytes) |
+| `POST /admin/keys`  |   16 KiB (16,384 bytes) |
+
+A body larger than its endpoint's limit receives
+`413 Payload Too Large` with a JSON error object:
+
+`{"error":"Request body too large"}`
+
+The limit is applied whether or not the request declares
+`Content-Length`.
+
+A body exactly at the limit is permitted. Malformed JSON within
+the limit continues to receive `400 Bad Request`.
+
+These limits are documented constants, not runtime configuration
+settings.
+
+Clients sending larger prompts or chat histories must reduce or
+trim the request body.
+
+The chat limit applies only to the inbound request; it does not
+limit the size or duration of streamed responses.
