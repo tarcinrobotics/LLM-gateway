@@ -30,10 +30,7 @@ func ChatHandler(
 		reqID := middleware.GetRequestID(r.Context())
 		apiKey := middleware.GetAPIKey(r.Context())
 
-		ip := r.Header.Get("X-Forwarded-For")
-		if ip == "" {
-			ip = r.RemoteAddr
-		}
+		ip := middleware.ClientIP(r)
 
 		if apiKey == nil {
 			writeChatAudit(db, reqID, "authentication_failed", "failure",

@@ -44,19 +44,33 @@ and disregard client-provided values entirely.
 
 ### Audit metadata review
 
-| Metadata                               | Source                              | Current handling                                                       | Follow-up                                                             |
-| -------------------------------------- | ----------------------------------- | ---------------------------------------------------------------------- | --------------------------------------------------------------------- |
-| `request_id`                           | Client header or server generator   | Validated and bounded at request boundary                              | Keep filter validation aligned                                        |
-| `event_type`, `outcome`, `status_code` | Gateway code paths                  | Selected by code; outcome has database constraint; status is integer   | Use fixed internal values                                             |
-| `api_key_id`                           | Authenticated API-key record        | Internal database identifier, not raw key                              | No change proposed                                                    |
-| `error_code`                           | Gateway error handling              | Fixed error codes; raw upstream errors and credentials are not written | Continue using safe codes                                             |
-| Legacy request-log `model`             | Client chat request                 | Stored as requested model name                                         | Consider a bounded model-name policy separately                       |
-| Legacy request-log `ip_address`        | `X-Forwarded-For` or remote address | Forwarding header is currently trusted when present                    | Configure trusted proxies and validate forwarded addresses separately |
-| `created_at`                           | Database                            | Database-generated timestamp                                           | No change proposed                                                    |
+| Metadata                               | Source                            | Current handling                                                       | Follow-up                                                      |
+| -------------------------------------- | --------------------------------- | ---------------------------------------------------------------------- | -------------------------------------------------------------- |
+| `request_id`                           | Client header or server generator | Validated and bounded at request boundary                              | Keep filter validation aligned                                 |
+| `event_type`, `outcome`, `status_code` | Gateway code paths                | Selected by code; outcome has database constraint; status is integer   | Use fixed internal values                                      |
+| `api_key_id`                           | Authenticated API-key record      | Internal database identifier, not raw key                              | No change proposed                                             |
+| `error_code`                           | Gateway error handling            | Fixed error codes; raw upstream errors and credentials are not written | Continue using safe codes                                      |
+| Legacy request-log `model`             | Client chat request               | Stored as requested model name                                         | Consider a bounded model-name policy separately                |
+| Legacy request-log `ip_address`        | Trusted-proxy resolver            | Direct peer by default; forwarded chain used only for a trusted peer   | Keep application and request logs on the shared resolved value |
+| `created_at`                           | Database                          | Database-generated timestamp                                           | No change proposed                                             |
 
 The legacy request-log fields are outside this request-ID change.
 Unrelated metadata should be reviewed with the maintainer before
 modifying its behavior.
+
+## Client IP and trusted proxy policy
+
+The gateway uses the direct TCP peer address (`RemoteAddr`) as the client IP by
+default. `X-Forwarded-For` is not trusted unless the immediate peer address
+matches an explicitly configured trusted proxy CIDR.
+
+Configure trusted proxies under `server.trusted_proxy_cidrs` in `config.yaml`:
+
+````yaml
+server:
+  trusted_proxy_cidrs:
+    - "10.20.0.0/16"
+    - "192.0.2.10/32"
 
 ## Database & API Keys
 
@@ -90,7 +104,7 @@ For example:
 ```bash
 curl -k -u "ADMIN_USER:ADMIN_PASS" \
   https://localhost:8443/admin/keys
-```
+````
 
 To revoke the identified key:
 

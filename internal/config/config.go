@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"strconv"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -17,11 +18,12 @@ type Config struct {
 }
 
 type ServerConfig struct {
-	Port                   int    `yaml:"port"`
-	TLSEnabled             bool   `yaml:"tls_enabled"`
-	CertFile               string `yaml:"cert_file"`
-	KeyFile                string `yaml:"key_file"`
-	ShutdownTimeoutSeconds int    `yaml:"shutdown_timeout_seconds"`
+	Port                   int      `yaml:"port"`
+	TLSEnabled             bool     `yaml:"tls_enabled"`
+	CertFile               string   `yaml:"cert_file"`
+	KeyFile                string   `yaml:"key_file"`
+	ShutdownTimeoutSeconds int      `yaml:"shutdown_timeout_seconds"`
+	TrustedProxyCIDRs      []string `yaml:"trusted_proxy_cidrs"`
 }
 
 type DatabaseConfig struct {
@@ -61,6 +63,19 @@ func LoadConfig(path string) (*Config, error) {
 		return nil, err
 	}
 
+	// Apply Environment Variables Overrides
+	if trustedProxyCIDRs := os.Getenv("TRUSTED_PROXY_CIDRS"); trustedProxyCIDRs != "" {
+		cfg.Server.TrustedProxyCIDRs = nil
+
+		for _, cidr := range strings.Split(trustedProxyCIDRs, ",") {
+			if cidr = strings.TrimSpace(cidr); cidr != "" {
+				cfg.Server.TrustedProxyCIDRs = append(
+					cfg.Server.TrustedProxyCIDRs,
+					cidr,
+				)
+			}
+		}
+	}
 	// Apply Environment Variables Overrides
 	if portStr := os.Getenv("PORT"); portStr != "" {
 		if p, err := strconv.Atoi(portStr); err == nil {

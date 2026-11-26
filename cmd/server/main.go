@@ -14,6 +14,7 @@ import (
 	"github.com/joho/godotenv"
 
 	"llm_gateway/internal/api"
+	"llm_gateway/internal/api/middleware"
 	"llm_gateway/internal/config"
 	"llm_gateway/internal/database"
 	"llm_gateway/internal/logger"
@@ -40,12 +41,23 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Parse trusted proxy CIDRs before starting the HTTP server.
+	// An empty list means forwarded headers are ignored for every connection.
+	trustedProxyCIDRs, err := middleware.ParseTrustedProxyCIDRs(
+		cfg.Server.TrustedProxyCIDRs,
+	)
+	if err != nil {
+		fmt.Printf("Error configuring trusted proxies: %v\n", err)
+		os.Exit(1)
+	}
+
 	// 2. Initialize logger
 	if err := logger.Init(cfg.Logging.FilePath, cfg.Logging.Level); err != nil {
 		fmt.Printf("Error initializing logger: %v\n", err)
 		os.Exit(1)
 	}
 
+	// Keep the rest of your existing main() function below this point.
 	slog.Info("Starting LLM Gateway...")
 
 	// 3. Initialize SQLite DB
@@ -87,6 +99,7 @@ func main() {
 		queueTimeout,
 		inferenceTimeout,
 		cfg.CORS.AllowedOrigins,
+		trustedProxyCIDRs,
 	)
 
 	// 8. Configure HTTPS/TLS Server

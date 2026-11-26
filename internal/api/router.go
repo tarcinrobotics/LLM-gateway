@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"io/fs"
 	"net/http"
+	"net/netip"
 	"time"
 
 	"llm_gateway/internal/api/handlers"
@@ -22,6 +23,7 @@ func NewRouter(
 	queueTimeout time.Duration,
 	inferenceTimeout time.Duration,
 	allowedOrigins []string,
+	trustedProxyCIDRs []netip.Prefix,
 ) http.Handler {
 	mux := http.NewServeMux()
 
@@ -72,7 +74,9 @@ func NewRouter(
 	var handler http.Handler = mux
 	handler = middleware.RecoveryMiddleware(handler)
 	handler = middleware.CORSMiddleware(allowedOrigins)(handler)
-	handler = middleware.LoggingMiddleware(handler)
-
+	handler = middleware.LoggingMiddlewareWithTrustedProxies(
+		handler,
+		trustedProxyCIDRs,
+	)
 	return handler
 }

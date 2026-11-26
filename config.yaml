@@ -5,6 +5,10 @@ server:
   key_file: "certs/server.key"
   shutdown_timeout_seconds: 10
 
+  # Only trust X-Forwarded-For from explicitly trusted peers.
+  # Empty list means forwarded headers are ignored.
+  trusted_proxy_cidrs: []
+
 database:
   path: "database/gateway.db"
 

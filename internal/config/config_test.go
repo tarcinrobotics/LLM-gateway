@@ -116,3 +116,89 @@ cors:
 		}
 	}
 }
+
+func TestLoadConfigPreservesTrustedProxyCIDRs(t *testing.T) {
+	t.Setenv("TRUSTED_PROXY_CIDRS", "")
+
+	configContent := `
+server:
+  trusted_proxy_cidrs:
+    - "10.0.0.0/8"
+    - "192.0.2.10/32"
+`
+
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+
+	if err := os.WriteFile(configPath, []byte(configContent), 0600); err != nil {
+		t.Fatalf("failed to write test config: %v", err)
+	}
+
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadConfig returned an error: %v", err)
+	}
+
+	want := []string{"10.0.0.0/8", "192.0.2.10/32"}
+
+	if len(cfg.Server.TrustedProxyCIDRs) != len(want) {
+		t.Fatalf(
+			"expected trusted proxies %v, got %v",
+			want,
+			cfg.Server.TrustedProxyCIDRs,
+		)
+	}
+
+	for i := range want {
+		if cfg.Server.TrustedProxyCIDRs[i] != want[i] {
+			t.Errorf(
+				"trusted proxy %d = %q, want %q",
+				i,
+				cfg.Server.TrustedProxyCIDRs[i],
+				want[i],
+			)
+		}
+	}
+}
+
+func TestLoadConfigTrustedProxyCIDRsEnvironmentOverride(t *testing.T) {
+	t.Setenv(
+		"TRUSTED_PROXY_CIDRS",
+		"10.0.0.0/8, 192.0.2.10/32",
+	)
+
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+
+	if err := os.WriteFile(
+		configPath,
+		[]byte("server:\n  trusted_proxy_cidrs: [\"172.16.0.0/12\"]\n"),
+		0600,
+	); err != nil {
+		t.Fatalf("failed to write test config: %v", err)
+	}
+
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadConfig returned an error: %v", err)
+	}
+
+	want := []string{"10.0.0.0/8", "192.0.2.10/32"}
+
+	if len(cfg.Server.TrustedProxyCIDRs) != len(want) {
+		t.Fatalf(
+			"expected environment override %v, got %v",
+			want,
+			cfg.Server.TrustedProxyCIDRs,
+		)
+	}
+
+	for i := range want {
+		if cfg.Server.TrustedProxyCIDRs[i] != want[i] {
+			t.Errorf(
+				"trusted proxy %d = %q, want %q",
+				i,
+				cfg.Server.TrustedProxyCIDRs[i],
+				want[i],
+			)
+		}
+	}
+}

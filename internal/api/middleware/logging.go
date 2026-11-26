@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/netip"
 	"sync/atomic"
 	"time"
 
@@ -120,6 +121,15 @@ func (rw *ResponseWriterWrapper) Flush() {
 // LoggingMiddleware validates or generates a request ID before
 // passing the request to downstream middleware and handlers.
 func LoggingMiddleware(next http.Handler) http.Handler {
+	return LoggingMiddlewareWithTrustedProxies(next, nil)
+}
+
+// LoggingMiddlewareWithTrustedProxies resolves the client address once at the
+// request boundary so application and downstream request logs share one value.
+func LoggingMiddlewareWithTrustedProxies(
+	next http.Handler,
+	trusted []netip.Prefix,
+) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		startTime := time.Now()
 
@@ -138,10 +148,12 @@ func LoggingMiddleware(next http.Handler) http.Handler {
 		// Return the selected ID to the client.
 		w.Header().Set(RequestIDHeader, reqID)
 
-		ip := r.Header.Get("X-Forwarded-For")
-		if ip == "" {
-			ip = r.RemoteAddr
-		}
+		ip := ResolveClientIP(
+			r.RemoteAddr,
+			r.Header.Values("X-Forwarded-For"),
+			trusted,
+		)
+		r = withClientIP(r, ip)
 
 		// Store the same selected ID in request context.
 		ctx := context.WithValue(
