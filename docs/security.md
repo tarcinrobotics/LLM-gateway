@@ -60,17 +60,58 @@ modifying its behavior.
 
 ## Client IP and trusted proxy policy
 
-The gateway uses the direct TCP peer address (`RemoteAddr`) as the client IP by
-default. `X-Forwarded-For` is not trusted unless the immediate peer address
-matches an explicitly configured trusted proxy CIDR.
+The gateway uses the direct TCP peer address (`RemoteAddr`) as the
+client IP by default. The `X-Forwarded-For` header is not trusted unless
+the immediate peer address matches an explicitly configured trusted
+proxy CIDR.
 
-Configure trusted proxies under `server.trusted_proxy_cidrs` in `config.yaml`:
+Configure trusted proxies under `server.trusted_proxy_cidrs` in
+`config.yaml`:
 
-````yaml
+```yaml
 server:
   trusted_proxy_cidrs:
     - "10.20.0.0/16"
     - "192.0.2.10/32"
+```
+
+You can also configure trusted proxies using the
+`TRUSTED_PROXY_CIDRS` environment variable. Provide a comma-separated
+list of CIDRs:
+
+```env
+TRUSTED_PROXY_CIDRS=10.20.0.0/16,192.0.2.10/32
+```
+
+When this environment variable is provided, its value overrides
+`server.trusted_proxy_cidrs` from `config.yaml`.
+
+If no trusted proxy CIDRs are configured, forwarded headers are
+ignored and the direct TCP peer address is used.
+
+### Forwarded address handling
+
+- The gateway only considers `X-Forwarded-For` when the immediate
+  TCP peer belongs to a configured trusted proxy CIDR.
+- The gateway resolves the client address by examining the forwarded
+  chain from the trusted proxy side.
+- If the forwarded chain contains a malformed address or an empty
+  entry, the entire forwarded chain is rejected and the direct TCP
+  peer address is used instead.
+- Forwarded headers supplied by an untrusted peer are ignored,
+  even if they contain an apparently valid client address.
+- If the chain does not identify a usable untrusted client address,
+  the direct TCP peer address is used.
+
+### Deployment security
+
+Only add proxy CIDRs for proxies that are controlled by your
+deployment. Those proxies must correctly handle and sanitize
+forwarded headers so that untrusted clients cannot inject or preserve
+spoofed client addresses.
+
+Do not configure broad or public network ranges as trusted proxies
+unless every address in those ranges is under your control.
 
 ## Database & API Keys
 
@@ -104,7 +145,7 @@ For example:
 ```bash
 curl -k -u "ADMIN_USER:ADMIN_PASS" \
   https://localhost:8443/admin/keys
-````
+```
 
 To revoke the identified key:
 

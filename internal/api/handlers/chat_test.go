@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -474,6 +475,19 @@ func setupChatAuditTest(
 	queueTimeout time.Duration,
 ) (http.Handler, *sql.DB) {
 	t.Helper()
+	return setupChatAuditTestWithTrustedProxies(
+		t, ollamaHandler, wp, queueTimeout, nil,
+	)
+}
+
+func setupChatAuditTestWithTrustedProxies(
+	t *testing.T,
+	ollamaHandler http.HandlerFunc,
+	wp *queue.WorkerPool,
+	queueTimeout time.Duration,
+	trustedProxies []netip.Prefix,
+) (http.Handler, *sql.DB) {
+	t.Helper()
 
 	server := httptest.NewServer(ollamaHandler)
 	t.Cleanup(server.Close)
@@ -508,8 +522,9 @@ func setupChatAuditTest(
 		2*time.Second,
 	)
 
-	wrappedHandler := middleware.LoggingMiddleware(
+	wrappedHandler := middleware.LoggingMiddlewareWithTrustedProxies(
 		middleware.AuthMiddleware(db)(handler),
+		trustedProxies,
 	)
 
 	return wrappedHandler, db
@@ -953,5 +968,89 @@ func TestChatRequestBodyLimit(t *testing.T) {
 			got.Code,
 			got.Body.String(),
 		)
+	}
+}
+
+func TestTrustedProxyClientIPMatchesApplicationAndSQLiteLogs(t *testing.T) {
+	trustedProxies, err := middleware.ParseTrustedProxyCIDRs([]string{"10.20.0.0/16"})
+	if err != nil {
+		t.Fatalf("parse trusted proxy CIDRs: %v", err)
+	}
+
+	tests := []struct {
+		name       string
+		remoteAddr string
+		forwarded  string
+		wantIP     string
+	}{
+		{
+			name:       "trusted proxy resolves forwarded client",
+			remoteAddr: "10.20.0.15:443",
+			forwarded:  "203.0.113.42",
+			wantIP:     "203.0.113.42",
+		},
+		{
+			name:       "untrusted peer cannot forge forwarded client",
+			remoteAddr: "198.51.100.17:443",
+			forwarded:  "203.0.113.42",
+			wantIP:     "198.51.100.17",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var logOutput strings.Builder
+			previousLogger := slog.Default()
+			slog.SetDefault(slog.New(slog.NewTextHandler(&logOutput, nil)))
+			t.Cleanup(func() { slog.SetDefault(previousLogger) })
+
+			wp := queue.NewWorkerPool(1, 2)
+			wp.Start()
+			t.Cleanup(wp.Stop)
+
+			handler, db := setupChatAuditTestWithTrustedProxies(
+				t,
+				func(w http.ResponseWriter, r *http.Request) {
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = w.Write([]byte(
+						`{"message":{"role":"assistant","content":"ok"},"done":true}`,
+					))
+				},
+				wp,
+				time.Second,
+				trustedProxies,
+			)
+
+			const requestID = "trusted-proxy-ip-integration"
+			body := `{"model":"test-model","messages":[{"role":"user","content":"hello"}]}`
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/chat", strings.NewReader(body))
+			req.RemoteAddr = tt.remoteAddr
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Authorization", "Bearer "+testAPIKey)
+			req.Header.Set("X-Request-ID", requestID)
+			req.Header.Set("X-Forwarded-For", tt.forwarded)
+
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, req)
+			if response.Code != http.StatusOK {
+				t.Fatalf("expected HTTP 200, got %d: %s", response.Code, response.Body.String())
+			}
+
+			logs := logOutput.String()
+			if !strings.Contains(logs, "ip="+tt.wantIP) {
+				t.Fatalf("application log does not contain resolved IP %q: %s", tt.wantIP, logs)
+			}
+
+			var loggedIP string
+			if err := db.QueryRow(
+				"SELECT ip_address FROM request_logs WHERE request_id = ?",
+				requestID,
+			).Scan(&loggedIP); err != nil {
+				t.Fatalf("read SQLite request log: %v", err)
+			}
+			if loggedIP != tt.wantIP {
+				t.Fatalf("SQLite request log IP = %q, want %q", loggedIP, tt.wantIP)
+			}
+		})
 	}
 }
